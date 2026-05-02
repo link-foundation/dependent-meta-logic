@@ -66,7 +66,7 @@ automated prover.
 | Lambda abstraction | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Host | Host | Yes | Yes | No |
 | Function application | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Host | Host | Yes | Yes | No |
 | Beta reduction | Part: beta for link lambdas | Yes | Yes | Yes | Yes | Yes | Yes | Host | Host | Part | Yes | No |
-| Definitional equality / conversion | Part | Yes | Yes | Yes | Yes | Yes | Yes | Host | Host | Part | Part: beta conversion | No |
+| Definitional equality / conversion | Yes: beta convertibility; eta opt-in API | Yes | Yes | Yes | Yes | Yes | Yes | Host | Host | Part | Part: beta conversion | No |
 | Full normalization | No: evaluator is not a normalizer | Yes for LF canonical forms | Yes in theory | Part | Yes where defined by logic/tools | Yes | Yes | Host | Host | Part | Part | No |
 | Universe hierarchy | Part: `(Type 0)`, `(Type 1)` | No: LF has kinds/types | No | No | No in HOL; object theories possible | Yes | Yes | Host | Host | No | No | No |
 | Sorts / kinds | Part | Yes | Yes | Yes | Yes: types/classes/logics | Yes | Yes | Host | Host | Yes: type declarations | Yes | Domain sorts |

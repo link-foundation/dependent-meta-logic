@@ -641,6 +641,14 @@ impl Default for EnvOptions {
     }
 }
 
+/// Options for definitional equality / convertibility checks.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConvertOptions {
+    /// Enable eta-contraction, e.g. `(lambda (A x) (apply f x)) == f`
+    /// when `x` is not free in `f`.
+    pub eta: bool,
+}
+
 /// A stored lambda definition (param name, param type, body).
 #[derive(Debug, Clone)]
 pub struct Lambda {
@@ -961,38 +969,13 @@ impl Env {
     /// Apply equality operator, checking assigned probabilities first.
     /// Takes `&mut self` so it can emit `lookup` trace events.
     pub fn apply_eq(&mut self, left: &Node, right: &Node) -> f64 {
-        // Check prefix form: (= L R)
-        let k_prefix = key_of(&Node::List(vec![
-            Node::Leaf("=".to_string()),
-            left.clone(),
-            right.clone(),
-        ]));
-        if let Some(&v) = self.assign.get(&k_prefix) {
-            self.trace(
-                "lookup",
-                format!("{} → {}", k_prefix, format_trace_value(v)),
-            );
-            return v;
+        if let Some(value) = lookup_assigned_infix(self, "=", left, right) {
+            return self.clamp(value);
         }
-        // Check infix form: (L = R)
-        let k_infix = key_of(&Node::List(vec![
-            left.clone(),
-            Node::Leaf("=".to_string()),
-            right.clone(),
-        ]));
-        if let Some(&v) = self.assign.get(&k_infix) {
-            self.trace(
-                "lookup",
-                format!("{} → {}", k_infix, format_trace_value(v)),
-            );
-            return v;
-        }
-        // Default: syntactic equality
-        if is_structurally_same(left, right) {
-            self.hi
-        } else {
-            self.lo
-        }
+        let options = ConvertOptions::default();
+        let left_term = normalize_term(left, self, options);
+        let right_term = normalize_term(right, self, options);
+        equality_truth_value(left, right, &left_term, &right_term, self, options)
     }
 
     /// Apply inequality operator: not(eq(L, R))
@@ -1541,8 +1524,323 @@ fn eval_term_node(node: &Node, env: &mut Env) -> Node {
     node.clone()
 }
 
+fn normalize_term(node: &Node, env: &mut Env, options: ConvertOptions) -> Node {
+    if let Node::List(children) = node {
+        if children.is_empty() {
+            return Node::List(vec![]);
+        }
+
+        if children.len() == 4 {
+            if let (Node::Leaf(head), Node::Leaf(var_name)) = (&children[0], &children[2]) {
+                if head == "subst" {
+                    let term = normalize_term(&children[1], env, options);
+                    let replacement = normalize_term(&children[3], env, options);
+                    let reduced = subst(&term, var_name, &replacement);
+                    return normalize_term(&reduced, env, options);
+                }
+            }
+        }
+
+        if children.len() == 3 {
+            if let Node::Leaf(head) = &children[0] {
+                if head == "apply" {
+                    let fn_node = &children[1];
+                    let arg = normalize_term(&children[2], env, options);
+                    if let Node::List(fn_children) = fn_node {
+                        if fn_children.len() == 3 {
+                            if let Node::Leaf(fn_head) = &fn_children[0] {
+                                if fn_head == "lambda" {
+                                    if let Some((param_name, _)) = parse_binding(&fn_children[1]) {
+                                        let reduced = subst(&fn_children[2], &param_name, &arg);
+                                        return normalize_term(&reduced, env, options);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Node::Leaf(fn_name) = fn_node {
+                        let resolved = env.resolve_qualified(fn_name);
+                        let lambda = env
+                            .get_lambda(fn_name)
+                            .cloned()
+                            .or_else(|| env.get_lambda(&resolved).cloned());
+                        if let Some(lambda) = lambda {
+                            let reduced = subst(&lambda.body, &lambda.param, &arg);
+                            return normalize_term(&reduced, env, options);
+                        }
+                    }
+                    return Node::List(vec![
+                        Node::Leaf("apply".into()),
+                        normalize_term(fn_node, env, options),
+                        arg,
+                    ]);
+                }
+
+                if head == "lambda" {
+                    let candidate = Node::List(vec![
+                        Node::Leaf("lambda".into()),
+                        normalize_term(&children[1], env, options),
+                        normalize_term(&children[2], env, options),
+                    ]);
+                    return eta_contract(&candidate, env, options);
+                }
+            }
+        }
+
+        if children.len() >= 2 {
+            if let Node::List(head_children) = &children[0] {
+                if head_children.len() == 3 {
+                    if let Node::Leaf(fn_head) = &head_children[0] {
+                        if fn_head == "lambda" {
+                            if let Some((param_name, _)) = parse_binding(&head_children[1]) {
+                                let arg = normalize_term(&children[1], env, options);
+                                let reduced = subst(&head_children[2], &param_name, &arg);
+                                if children.len() == 2 {
+                                    return normalize_term(&reduced, env, options);
+                                }
+                                let mut next = vec![reduced];
+                                next.extend_from_slice(&children[2..]);
+                                return normalize_term(&Node::List(next), env, options);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if children.len() >= 2 {
+            if let Node::Leaf(head) = &children[0] {
+                let resolved = env.resolve_qualified(head);
+                let lambda = env
+                    .get_lambda(head)
+                    .cloned()
+                    .or_else(|| env.get_lambda(&resolved).cloned());
+                if let Some(lambda) = lambda {
+                    let arg = normalize_term(&children[1], env, options);
+                    let reduced = subst(&lambda.body, &lambda.param, &arg);
+                    if children.len() == 2 {
+                        return normalize_term(&reduced, env, options);
+                    }
+                    let mut next = vec![reduced];
+                    next.extend_from_slice(&children[2..]);
+                    return normalize_term(&Node::List(next), env, options);
+                }
+            }
+        }
+
+        return Node::List(
+            children
+                .iter()
+                .map(|child| normalize_term(child, env, options))
+                .collect(),
+        );
+    }
+    node.clone()
+}
+
+fn eta_contract(term: &Node, env: &mut Env, options: ConvertOptions) -> Node {
+    if !options.eta {
+        return term.clone();
+    }
+    let children = match term {
+        Node::List(children) if children.len() == 3 => children,
+        _ => return term.clone(),
+    };
+    if !matches!(&children[0], Node::Leaf(head) if head == "lambda") {
+        return term.clone();
+    }
+    let bindings = parse_bindings(&children[1]).unwrap_or_default();
+    if bindings.len() != 1 {
+        return term.clone();
+    }
+    let param = &bindings[0].0;
+    let body = &children[2];
+    let fn_node = match body {
+        Node::List(body_children) if body_children.len() == 3 => {
+            if matches!(&body_children[0], Node::Leaf(head) if head == "apply")
+                && is_structurally_same(&body_children[2], &Node::Leaf(param.clone()))
+            {
+                Some(body_children[1].clone())
+            } else {
+                None
+            }
+        }
+        Node::List(body_children) if body_children.len() == 2 => {
+            if is_structurally_same(&body_children[1], &Node::Leaf(param.clone())) {
+                Some(body_children[0].clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    if let Some(fn_node) = fn_node {
+        if !free_variables(&fn_node).contains(param) {
+            return normalize_term(&fn_node, env, options);
+        }
+    }
+    term.clone()
+}
+
+fn lookup_assigned_infix(env: &mut Env, op: &str, left: &Node, right: &Node) -> Option<f64> {
+    let candidates = [
+        Node::List(vec![
+            Node::Leaf(op.to_string()),
+            left.clone(),
+            right.clone(),
+        ]),
+        Node::List(vec![
+            left.clone(),
+            Node::Leaf(op.to_string()),
+            right.clone(),
+        ]),
+    ];
+    for candidate in candidates {
+        let key = key_of(&candidate);
+        if let Some(&value) = env.assign.get(&key) {
+            env.trace("lookup", format!("{} → {}", key, format_trace_value(value)));
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn same_normalized_input(left: &Node, right: &Node, left_term: &Node, right_term: &Node) -> bool {
+    is_structurally_same(left, left_term) && is_structurally_same(right, right_term)
+}
+
+fn explicit_symbol_number(node: &Node, env: &Env) -> Option<f64> {
+    if let Node::Leaf(name) = node {
+        if let Some(value) = env.symbol_prob.get(name) {
+            return Some(*value);
+        }
+        let resolved = env.resolve_qualified(name);
+        if resolved != *name {
+            return env.symbol_prob.get(&resolved).copied();
+        }
+    }
+    None
+}
+
+fn try_eval_numeric(node: &Node, env: &mut Env, options: ConvertOptions) -> Option<f64> {
+    let term = normalize_term(node, env, options);
+    match &term {
+        Node::Leaf(s) if is_num(s) => s.parse::<f64>().ok(),
+        Node::Leaf(_) => explicit_symbol_number(&term, env),
+        Node::List(children) if children.is_empty() => None,
+        Node::List(children) => {
+            if children.len() == 3 {
+                if let Node::Leaf(op) = &children[1] {
+                    if matches!(op.as_str(), "+" | "-" | "*" | "/") {
+                        let left = try_eval_numeric(&children[0], env, options)?;
+                        let right = try_eval_numeric(&children[2], env, options)?;
+                        return Some(env.apply_op(op, &[left, right]));
+                    }
+                    if matches!(op.as_str(), "and" | "or" | "both" | "neither") {
+                        let left = try_eval_numeric(&children[0], env, options)?;
+                        let right = try_eval_numeric(&children[2], env, options)?;
+                        let value = env.apply_op(op, &[left, right]);
+                        return Some(env.clamp(value));
+                    }
+                }
+            }
+            if let Node::Leaf(head) = &children[0] {
+                if head != "=" && head != "!=" && env.has_op(head) {
+                    let mut values = Vec::new();
+                    for arg in &children[1..] {
+                        values.push(try_eval_numeric(arg, env, options)?);
+                    }
+                    let value = env.apply_op(head, &values);
+                    return Some(env.clamp(value));
+                }
+            }
+            None
+        }
+    }
+}
+
+fn equality_truth_value(
+    left: &Node,
+    right: &Node,
+    left_term: &Node,
+    right_term: &Node,
+    env: &mut Env,
+    options: ConvertOptions,
+) -> f64 {
+    if let Some(value) = lookup_assigned_infix(env, "=", left, right) {
+        return env.clamp(value);
+    }
+    if !same_normalized_input(left, right, left_term, right_term) {
+        if let Some(value) = lookup_assigned_infix(env, "=", left_term, right_term) {
+            return env.clamp(value);
+        }
+    }
+    if is_structurally_same(left_term, right_term) {
+        return env.hi;
+    }
+    let left_num = try_eval_numeric(left_term, env, options);
+    let right_num = try_eval_numeric(right_term, env, options);
+    if let (Some(left_num), Some(right_num)) = (left_num, right_num) {
+        if dec_round(left_num) == dec_round(right_num) {
+            env.hi
+        } else {
+            env.lo
+        }
+    } else {
+        env.lo
+    }
+}
+
+fn eval_equality_node(left: &Node, op: &str, right: &Node, env: &mut Env) -> EvalResult {
+    let options = ConvertOptions::default();
+    if let Some(value) = lookup_assigned_infix(env, op, left, right) {
+        return EvalResult::Value(env.clamp(value));
+    }
+    let left_term = normalize_term(left, env, options);
+    let right_term = normalize_term(right, env, options);
+    if !same_normalized_input(left, right, &left_term, &right_term) {
+        if let Some(value) = lookup_assigned_infix(env, op, &left_term, &right_term) {
+            return EvalResult::Value(env.clamp(value));
+        }
+    }
+    if op == "=" {
+        let value = equality_truth_value(left, right, &left_term, &right_term, env, options);
+        EvalResult::Value(env.clamp(value))
+    } else {
+        let eq = equality_truth_value(left, right, &left_term, &right_term, env, options);
+        let value = env.apply_op("not", &[eq]);
+        EvalResult::Value(env.clamp(value))
+    }
+}
+
+/// Decide whether two terms are definitionally equal under the current
+/// environment using beta-normalization and explicit equality assignments.
+pub fn is_convertible(left: &Node, right: &Node, env: &mut Env) -> bool {
+    is_convertible_with_options(left, right, env, ConvertOptions::default())
+}
+
+/// Variant of [`is_convertible`] with opt-in conversion features.
+pub fn is_convertible_with_options(
+    left: &Node,
+    right: &Node,
+    env: &mut Env,
+    options: ConvertOptions,
+) -> bool {
+    if let Some(value) = lookup_assigned_infix(env, "=", left, right) {
+        return env.clamp(value) == env.hi;
+    }
+    let left_term = normalize_term(left, env, options);
+    let right_term = normalize_term(right, env, options);
+    if !same_normalized_input(left, right, &left_term, &right_term) {
+        if let Some(value) = lookup_assigned_infix(env, "=", &left_term, &right_term) {
+            return env.clamp(value) == env.hi;
+        }
+    }
+    is_structurally_same(&left_term, &right_term)
+}
+
 fn eval_reduced_term(reduced: &Node, env: &mut Env) -> EvalResult {
-    let term = eval_term_node(reduced, env);
+    let term = normalize_term(reduced, env, ConvertOptions::default());
     if has_unresolved_free_variables(&term, env) {
         EvalResult::Term(term)
     } else {
@@ -2129,95 +2427,10 @@ pub fn eval_node(node: &Node, env: &mut Env) -> EvalResult {
             if children.len() == 3 {
                 if let Node::Leaf(ref op_name) = children[1] {
                     if op_name == "=" {
-                        let left_term = eval_term_node(&children[0], env);
-                        let right_term = eval_term_node(&children[2], env);
-                        match env.ops.get("=").cloned() {
-                            Some(Op::Compose { outer, inner }) => {
-                                let inner_val = apply_named_op_on_nodes(
-                                    env,
-                                    &inner,
-                                    &left_term,
-                                    &right_term,
-                                );
-                                let outer_val = env.apply_op(&outer, &[inner_val]);
-                                return EvalResult::Value(env.clamp(outer_val));
-                            }
-                            _ => {
-                                let raw = env.apply_eq(&left_term, &right_term);
-                                // If there's an explicit assignment or structural match, trust it
-                                let k_prefix = key_of(&Node::List(vec![
-                                    Node::Leaf("=".to_string()),
-                                    left_term.clone(),
-                                    right_term.clone(),
-                                ]));
-                                let k_infix = key_of(&Node::List(vec![
-                                    left_term.clone(),
-                                    Node::Leaf("=".to_string()),
-                                    right_term.clone(),
-                                ]));
-                                if env.assign.contains_key(&k_prefix)
-                                    || env.assign.contains_key(&k_infix)
-                                    || is_structurally_same(&left_term, &right_term)
-                                {
-                                    return EvalResult::Value(env.clamp(raw));
-                                }
-                                // No explicit assignment — try numeric comparison (decimal-precision)
-                                let l = eval_arith(&left_term, env);
-                                let r = eval_arith(&right_term, env);
-                                let num_eq = if dec_round(l) == dec_round(r) {
-                                    env.hi
-                                } else {
-                                    env.lo
-                                };
-                                return EvalResult::Value(env.clamp(num_eq));
-                            }
-                        }
+                        return eval_equality_node(&children[0], "=", &children[2], env);
                     }
                     if op_name == "!=" {
-                        let left_term = eval_term_node(&children[0], env);
-                        let right_term = eval_term_node(&children[2], env);
-                        match env.ops.get("!=").cloned() {
-                            Some(Op::Compose { outer, inner }) => {
-                                let inner_val = apply_named_op_on_nodes(
-                                    env,
-                                    &inner,
-                                    &left_term,
-                                    &right_term,
-                                );
-                                let outer_val = env.apply_op(&outer, &[inner_val]);
-                                return EvalResult::Value(env.clamp(outer_val));
-                            }
-                            _ => {
-                                // Check explicit assignment or structural match first
-                                let k_prefix = key_of(&Node::List(vec![
-                                    Node::Leaf("=".to_string()),
-                                    left_term.clone(),
-                                    right_term.clone(),
-                                ]));
-                                let k_infix = key_of(&Node::List(vec![
-                                    left_term.clone(),
-                                    Node::Leaf("=".to_string()),
-                                    right_term.clone(),
-                                ]));
-                                if env.assign.contains_key(&k_prefix)
-                                    || env.assign.contains_key(&k_infix)
-                                    || is_structurally_same(&left_term, &right_term)
-                                {
-                                    let neq = env.apply_neq(&left_term, &right_term);
-                                    return EvalResult::Value(env.clamp(neq));
-                                }
-                                // No explicit assignment — try numeric comparison
-                                let l = eval_arith(&left_term, env);
-                                let r = eval_arith(&right_term, env);
-                                let num_eq = if dec_round(l) == dec_round(r) {
-                                    env.hi
-                                } else {
-                                    env.lo
-                                };
-                                let neq = env.apply_op("not", &[num_eq]);
-                                return EvalResult::Value(env.clamp(neq));
-                            }
-                        }
+                        return eval_equality_node(&children[0], "!=", &children[2], env);
                     }
                 }
             }
@@ -2373,6 +2586,9 @@ pub fn eval_node(node: &Node, env: &mut Env) -> EvalResult {
             // Prefix: (not X), (and X Y ...), (or X Y ...)
             if let Node::Leaf(ref head) = children[0] {
                 let head_str = head.clone();
+                if (head_str == "=" || head_str == "!=") && children.len() == 3 {
+                    return eval_equality_node(&children[1], &head_str, &children[2], env);
+                }
                 if env.has_op(&head_str) {
                     let vals: Vec<f64> = children[1..]
                         .iter()
@@ -2419,16 +2635,6 @@ pub fn eval_node(node: &Node, env: &mut Env) -> EvalResult {
 
             EvalResult::Value(0.0)
         }
-    }
-}
-
-/// Helper for applying a named op when dealing with node-based equality.
-fn apply_named_op_on_nodes(env: &mut Env, op_name: &str, left: &Node, right: &Node) -> f64 {
-    let op = env.ops.get(op_name).cloned();
-    match op {
-        Some(Op::Eq) => env.apply_eq(left, right),
-        Some(Op::Neq) => env.apply_neq(left, right),
-        _ => env.lo,
     }
 }
 

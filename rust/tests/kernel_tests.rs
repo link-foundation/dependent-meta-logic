@@ -4,7 +4,10 @@
 // formation, application by beta-reduction, capture-avoiding substitution,
 // freshness, and type membership/query links.
 
-use rml::{evaluate, RunResult};
+use rml::{
+    eval_node, evaluate, is_convertible, is_convertible_with_options, ConvertOptions, Env, Node,
+    RunResult,
+};
 
 fn evaluate_clean(src: &str) -> Vec<RunResult> {
     let out = evaluate(src, None, None);
@@ -90,6 +93,107 @@ fn applies_lambdas_by_beta_reducing_argument_into_body() {
             RunResult::Num(0.3)
         ]
     );
+}
+
+#[test]
+fn decides_definitional_equality_by_beta_normalizing_terms() {
+    let results = evaluate_clean(
+        r#"
+(? ((apply (lambda (Natural x) x) 0) = 0))
+(? ((pair (apply (lambda (Natural x) x) y)) = (pair y)))
+(? ((pair x) = (pair y)))
+"#,
+    );
+    assert_eq!(
+        results,
+        vec![
+            RunResult::Num(1.0),
+            RunResult::Num(1.0),
+            RunResult::Num(0.0)
+        ]
+    );
+}
+
+#[test]
+fn uses_explicit_equality_assignments_before_conversion() {
+    let results = evaluate_clean(
+        r#"
+(Natural: (Type 0) Natural)
+(zero: Natural zero)
+(identity: lambda (Natural x) x)
+(((apply identity zero) = zero) has probability 0.5)
+(? ((apply identity zero) = zero))
+"#,
+    );
+    assert_eq!(results, vec![RunResult::Num(0.5)]);
+}
+
+#[test]
+fn exposes_is_convertible_for_beta_assignment_lookup_and_opt_in_eta() {
+    let mut env = Env::new(None);
+    eval_node(
+        &Node::List(vec![
+            Node::Leaf("zero:".into()),
+            Node::Leaf("Natural".into()),
+            Node::Leaf("zero".into()),
+        ]),
+        &mut env,
+    );
+    eval_node(
+        &Node::List(vec![
+            Node::Leaf("identity:".into()),
+            Node::Leaf("lambda".into()),
+            Node::List(vec![Node::Leaf("Natural".into()), Node::Leaf("x".into())]),
+            Node::Leaf("x".into()),
+        ]),
+        &mut env,
+    );
+    eval_node(
+        &Node::List(vec![
+            Node::List(vec![
+                Node::Leaf("zero".into()),
+                Node::Leaf("=".into()),
+                Node::Leaf("alias".into()),
+            ]),
+            Node::Leaf("has".into()),
+            Node::Leaf("probability".into()),
+            Node::Leaf("1".into()),
+        ]),
+        &mut env,
+    );
+
+    assert!(is_convertible(
+        &Node::List(vec![
+            Node::Leaf("apply".into()),
+            Node::Leaf("identity".into()),
+            Node::Leaf("zero".into()),
+        ]),
+        &Node::Leaf("zero".into()),
+        &mut env,
+    ));
+    assert!(is_convertible(
+        &Node::Leaf("zero".into()),
+        &Node::Leaf("alias".into()),
+        &mut env,
+    ));
+
+    let eta_lhs = Node::List(vec![
+        Node::Leaf("lambda".into()),
+        Node::List(vec![Node::Leaf("Natural".into()), Node::Leaf("x".into())]),
+        Node::List(vec![
+            Node::Leaf("apply".into()),
+            Node::Leaf("f".into()),
+            Node::Leaf("x".into()),
+        ]),
+    ]);
+    let eta_rhs = Node::Leaf("f".into());
+    assert!(!is_convertible(&eta_lhs, &eta_rhs, &mut env));
+    assert!(is_convertible_with_options(
+        &eta_lhs,
+        &eta_rhs,
+        &mut env,
+        ConvertOptions { eta: true },
+    ));
 }
 
 #[test]

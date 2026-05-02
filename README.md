@@ -660,7 +660,7 @@ The test suites cover:
 - Belnap operators (`both...and`, `neither...nor`): default aggregators, redefinition, composite/prefix/infix forms, fuzzy values, range changes
 - Liar paradox resolution across logic types
 - Decimal-precision arithmetic (`+`, `-`, `*`, `/`) and numeric equality
-- Dependent type system: universes, Pi-types, lambdas, application, type queries, prefix type notation
+- Dependent type system: universes, Pi-types, lambdas, application, definitional equality, type queries, prefix type notation
 - Self-referential types: `(Type: Type Type)`, paradox resolution alongside types, coexistence with universe hierarchy
 - Bayesian inference: Bayes' theorem, law of total probability, conditional probability, complement rule
 - Bayesian networks: joint probability (product), probabilistic sum (probabilistic_sum), multi-node networks, chain rule decomposition

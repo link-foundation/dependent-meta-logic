@@ -876,8 +876,211 @@ function evalTermNode(node, env) {
   return node;
 }
 
+function conversionOptionsFrom(ctx, options) {
+  const opts = options || {};
+  const ctxOpts = ctx && !(ctx instanceof Env) ? ctx : {};
+  return {
+    eta: Boolean(opts.eta || opts.etaConversion || ctxOpts.eta || ctxOpts.etaConversion),
+  };
+}
+
+function parseTermInput(term) {
+  if (Array.isArray(term)) return term;
+  if (typeof term !== 'string') return String(term);
+  const trimmed = term.trim();
+  if (trimmed.startsWith('(')) {
+    try {
+      return parseOne(tokenizeOne(trimmed));
+    } catch (_) {
+      return term;
+    }
+  }
+  return term;
+}
+
+function normalizeTerm(node, env, options = {}) {
+  if (!Array.isArray(node)) return node;
+  if (node.length === 0) return [];
+
+  if (node.length === 4 && node[0] === 'subst' && typeof node[2] === 'string') {
+    const term = normalizeTerm(node[1], env, options);
+    const replacement = normalizeTerm(node[3], env, options);
+    return normalizeTerm(subst(term, node[2], replacement), env, options);
+  }
+
+  if (node.length === 3 && node[0] === 'apply') {
+    const fn = node[1];
+    const arg = normalizeTerm(node[2], env, options);
+    if (Array.isArray(fn) && fn.length === 3 && fn[0] === 'lambda') {
+      const parsed = parseBinding(fn[1]);
+      if (parsed) return normalizeTerm(subst(fn[2], parsed.paramName, arg), env, options);
+    }
+    if (typeof fn === 'string') {
+      const lambda = env.getLambda(fn) || env.getLambda(env._resolveQualified(fn));
+      if (lambda) return normalizeTerm(subst(lambda.body, lambda.param, arg), env, options);
+    }
+    return ['apply', normalizeTerm(fn, env, options), arg];
+  }
+
+  if (node.length === 3 && node[0] === 'lambda') {
+    const candidate = ['lambda', normalizeTerm(node[1], env, options), normalizeTerm(node[2], env, options)];
+    return etaContract(candidate, env, options);
+  }
+
+  const [head, ...args] = node;
+  if (Array.isArray(head) && head.length === 3 && head[0] === 'lambda' && args.length >= 1) {
+    const parsed = parseBinding(head[1]);
+    if (parsed) {
+      const first = normalizeTerm(args[0], env, options);
+      const reduced = subst(head[2], parsed.paramName, first);
+      if (args.length === 1) return normalizeTerm(reduced, env, options);
+      return normalizeTerm([reduced, ...args.slice(1)], env, options);
+    }
+  }
+
+  if (typeof head === 'string' && args.length >= 1) {
+    const lambda = env.getLambda(head) || env.getLambda(env._resolveQualified(head));
+    if (lambda) {
+      const first = normalizeTerm(args[0], env, options);
+      const reduced = subst(lambda.body, lambda.param, first);
+      if (args.length === 1) return normalizeTerm(reduced, env, options);
+      return normalizeTerm([reduced, ...args.slice(1)], env, options);
+    }
+  }
+
+  return node.map(child => normalizeTerm(child, env, options));
+}
+
+function etaContract(term, env, options) {
+  if (!options.eta || !Array.isArray(term) || term.length !== 3 || term[0] !== 'lambda') {
+    return term;
+  }
+  const bindings = parseBindings(term[1]);
+  if (!bindings || bindings.length !== 1) return term;
+  const param = bindings[0].paramName;
+  const body = term[2];
+  let fn = null;
+  if (Array.isArray(body) && body.length === 3 && body[0] === 'apply' && isStructurallySame(body[2], param)) {
+    fn = body[1];
+  } else if (Array.isArray(body) && body.length === 2 && isStructurallySame(body[1], param)) {
+    fn = body[0];
+  }
+  if (fn !== null && !freeVariables(fn).has(param)) {
+    return normalizeTerm(fn, env, options);
+  }
+  return term;
+}
+
+function lookupAssignedInfix(env, op, left, right) {
+  for (const expr of [[op, left, right], [left, op, right]]) {
+    const key = keyOf(expr);
+    if (env.assign.has(key)) {
+      const value = env.assign.get(key);
+      env.trace('lookup', `${key} → ${formatTraceValue(value)}`);
+      return value;
+    }
+  }
+  return null;
+}
+
+function sameNormalizedInput(left, right, leftTerm, rightTerm) {
+  return isStructurallySame(left, leftTerm) && isStructurallySame(right, rightTerm);
+}
+
+function explicitSymbolNumber(node, env) {
+  if (typeof node !== 'string') return null;
+  if (env.symbolProb.has(node)) return env.symbolProb.get(node);
+  const resolved = env._resolveQualified(node);
+  if (resolved !== node && env.symbolProb.has(resolved)) return env.symbolProb.get(resolved);
+  return null;
+}
+
+function tryEvalNumeric(node, env, options = {}) {
+  const term = normalizeTerm(node, env, options);
+  if (typeof term === 'string') {
+    if (isNum(term)) return parseFloat(term);
+    return explicitSymbolNumber(term, env);
+  }
+  if (!Array.isArray(term) || term.length === 0) return null;
+
+  if (term.length === 3 && typeof term[1] === 'string' && ['+','-','*','/'].includes(term[1])) {
+    const left = tryEvalNumeric(term[0], env, options);
+    const right = tryEvalNumeric(term[2], env, options);
+    if (left === null || right === null) return null;
+    return env.getOp(term[1])(left, right);
+  }
+
+  if (term.length === 3 && typeof term[1] === 'string' && ['and','or','both','neither'].includes(term[1])) {
+    const left = tryEvalNumeric(term[0], env, options);
+    const right = tryEvalNumeric(term[2], env, options);
+    if (left === null || right === null) return null;
+    return env.clamp(env.getOp(term[1])(left, right));
+  }
+
+  const [head, ...args] = term;
+  if (typeof head === 'string' && env.hasOp(head) && head !== '=' && head !== '!=') {
+    const vals = [];
+    for (const arg of args) {
+      const value = tryEvalNumeric(arg, env, options);
+      if (value === null) return null;
+      vals.push(value);
+    }
+    return env.clamp(env.getOp(head)(...vals));
+  }
+
+  return null;
+}
+
+function equalityTruthValue(left, right, leftTerm, rightTerm, env, options = {}) {
+  const assigned = lookupAssignedInfix(env, '=', left, right);
+  if (assigned !== null) return env.clamp(assigned);
+  if (!sameNormalizedInput(left, right, leftTerm, rightTerm)) {
+    const normalizedAssigned = lookupAssignedInfix(env, '=', leftTerm, rightTerm);
+    if (normalizedAssigned !== null) return env.clamp(normalizedAssigned);
+  }
+  if (isStructurallySame(leftTerm, rightTerm)) return env.hi;
+  const leftNum = tryEvalNumeric(leftTerm, env, options);
+  const rightNum = tryEvalNumeric(rightTerm, env, options);
+  if (leftNum !== null && rightNum !== null) {
+    return decRound(leftNum) === decRound(rightNum) ? env.hi : env.lo;
+  }
+  return env.lo;
+}
+
+function evalEqualityNode(left, op, right, env, options = {}) {
+  const direct = lookupAssignedInfix(env, op, left, right);
+  if (direct !== null) return env.clamp(direct);
+  const leftTerm = normalizeTerm(left, env, options);
+  const rightTerm = normalizeTerm(right, env, options);
+  if (!sameNormalizedInput(left, right, leftTerm, rightTerm)) {
+    const normalizedDirect = lookupAssignedInfix(env, op, leftTerm, rightTerm);
+    if (normalizedDirect !== null) return env.clamp(normalizedDirect);
+  }
+  if (op === '=') {
+    return env.clamp(equalityTruthValue(left, right, leftTerm, rightTerm, env, options));
+  }
+  const eq = equalityTruthValue(left, right, leftTerm, rightTerm, env, options);
+  return env.clamp(env.getOp('not')(eq));
+}
+
+function isConvertible(left, right, ctx, options) {
+  const env = ctx instanceof Env ? ctx : new Env(ctx && ctx.env ? ctx.env : ctx);
+  const opts = conversionOptionsFrom(ctx, options);
+  const leftNode = parseTermInput(left);
+  const rightNode = parseTermInput(right);
+  const assigned = lookupAssignedInfix(env, '=', leftNode, rightNode);
+  if (assigned !== null) return env.clamp(assigned) === env.hi;
+  const leftTerm = normalizeTerm(leftNode, env, opts);
+  const rightTerm = normalizeTerm(rightNode, env, opts);
+  if (!sameNormalizedInput(leftNode, rightNode, leftTerm, rightTerm)) {
+    const normalizedAssigned = lookupAssignedInfix(env, '=', leftTerm, rightTerm);
+    if (normalizedAssigned !== null) return env.clamp(normalizedAssigned) === env.hi;
+  }
+  return isStructurallySame(leftTerm, rightTerm);
+}
+
 function evalReducedTerm(reduced, env) {
-  const term = evalTermNode(reduced, env);
+  const term = normalizeTerm(reduced, env);
   if (hasUnresolvedFreeVariables(term, env)) return { term };
   return evalNode(term, env);
 }
@@ -1026,28 +1229,7 @@ function evalNode(node, env){
 
   // Infix equality/inequality: (L = R), (L != R)
   if (node.length === 3 && typeof node[1] === 'string' && (node[1]==='=' || node[1]==='!=')) {
-    const op = env.getOp(node[1]);
-    const leftTerm = evalTermNode(node[0], env);
-    const rightTerm = evalTermNode(node[2], env);
-    // Equality checks assigned probability first, then structural equality,
-    // then falls back to numeric comparison of evaluated values (decimal-precision)
-    const raw = op(leftTerm, rightTerm, keyOf);
-    // If structural/assigned equality already gave a definitive answer, use it
-    if (raw === env.hi || raw === env.lo) {
-      // Check if there's an explicit assignment — if so, trust it
-      const kPrefix = keyOf(['=',leftTerm,rightTerm]);
-      const kInfix = keyOf([leftTerm,'=',rightTerm]);
-      if (env.assign.has(kPrefix) || env.assign.has(kInfix) || isStructurallySame(leftTerm, rightTerm)) {
-        return env.clamp(raw);
-      }
-      // No explicit assignment and not structurally same — try numeric comparison
-      const L = evalArith(leftTerm, env);
-      const R = evalArith(rightTerm, env);
-      const numEq = decRound(L) === decRound(R) ? env.hi : env.lo;
-      if (node[1] === '!=') return env.clamp(env.getOp('not')(numEq));
-      return env.clamp(numEq);
-    }
-    return env.clamp(raw);
+    return evalEqualityNode(node[0], node[1], node[2], env);
   }
 
   // ---------- Type System: "everything is a link" ----------
@@ -1160,6 +1342,9 @@ function evalNode(node, env){
 
   // Prefix: (not X), (and X Y ...), (or X Y ...)
   const [head, ...args] = node;
+  if (typeof head === 'string' && (head === '=' || head === '!=') && args.length === 2) {
+    return evalEqualityNode(args[0], head, args[1], env);
+  }
   if (typeof head === 'string' && env.hasOp(head)) {
     const op = env.getOp(head);
     const vals = args.map(a => evalNode(a, env));
@@ -2103,6 +2288,7 @@ export {
   keyOf,
   isNum,
   isStructurallySame,
+  isConvertible,
   parseBinding,
   parseBindings,
   subst,

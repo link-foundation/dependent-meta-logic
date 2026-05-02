@@ -108,7 +108,7 @@ The test suite covers:
 - Both `[0, 1]` and `[-1, 1]` ranges
 - Liar paradox resolution across logic types
 - Decimal-precision arithmetic and numeric equality
-- Dependent type system: universes, Pi-types, lambdas, application, capture-avoiding substitution, freshness, type queries
+- Dependent type system: universes, Pi-types, lambdas, application, definitional equality, capture-avoiding substitution, freshness, type queries
 - Self-referential types: `(Type: Type Type)`, paradox resolution alongside types
 
 ## Implementation Notes
