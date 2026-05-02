@@ -229,10 +229,13 @@ function checkNode(expr, proof, ops, assigned, path) {
       return rule;
     }
     case 'definition':
+      return checkPayload(rule, subs, [expr], path);
     case 'configuration':
+      return checkConfiguration(expr, rule, subs, path);
     case 'assigned-probability':
+      return checkAssignedProbability(expr, rule, subs, path);
     case 'reduce':
-      return rule;
+      return checkPayload(rule, subs, [expr], path);
     case 'query':
       throw { path: [...path], message: 'stray `query` rule (stripped by checker)' };
     case 'sum':
@@ -301,6 +304,41 @@ function arity(rule, subs, n, path) {
       message: `rule \`${rule}\` expects ${n} sub(s), got ${subs.length}`,
     };
   }
+}
+
+function checkPayload(rule, subs, expected, path) {
+  arity(rule, subs, expected.length, path);
+  for (let i = 0; i < expected.length; i++) {
+    if (!isStructurallySame(subs[i], expected[i])) {
+      throw {
+        path: [...path],
+        message: `payload ${i} \`${keyOf(subs[i])}\` ≠ \`${keyOf(expected[i])}\``,
+      };
+    }
+  }
+  return rule;
+}
+
+function checkConfiguration(expr, rule, subs, path) {
+  if (Array.isArray(expr) && expr.length === 3 && expr[0] === 'range') {
+    return checkPayload(rule, subs, ['range', expr[1], expr[2]], path);
+  }
+  if (Array.isArray(expr) && expr.length === 2 && expr[0] === 'valence') {
+    return checkPayload(rule, subs, ['valence', expr[1]], path);
+  }
+  throw { path: [...path], message: `\`${rule}\` ≠ \`${keyOf(expr)}\`` };
+}
+
+function checkAssignedProbability(expr, rule, subs, path) {
+  if (
+    Array.isArray(expr) &&
+    expr.length === 4 &&
+    expr[1] === 'has' &&
+    expr[2] === 'probability'
+  ) {
+    return checkPayload(rule, subs, [expr[0], expr[3]], path);
+  }
+  throw { path: [...path], message: `\`${rule}\` ≠ \`${keyOf(expr)}\`` };
 }
 
 // True when `rule` is the bare name of a prefix operator applied at expr.

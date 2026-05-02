@@ -102,6 +102,40 @@ describe('operand mutations', () => {
   });
 });
 
+describe('payload mutations', () => {
+  it('rejects wrong reduce payload', () => {
+    const r = checkProgram(
+      '(? (mystery 1))',
+      '(by reduce (different 2))',
+    );
+    assert.ok(!isOk(r));
+  });
+
+  it('rejects wrong definition payload', () => {
+    const r = checkProgram(
+      '(? (foo: bar))',
+      '(by definition (bar: foo))',
+    );
+    assert.ok(!isOk(r));
+  });
+
+  it('rejects wrong configuration payload', () => {
+    const r = checkProgram(
+      '(? (range 0 1))',
+      '(by configuration valence 9)',
+    );
+    assert.ok(!isOk(r));
+  });
+
+  it('rejects wrong assigned-probability payload', () => {
+    const r = checkProgram(
+      '(? ((a = a) has probability 0.7))',
+      '(by assigned-probability (b = b) 0.2)',
+    );
+    assert.ok(!isOk(r));
+  });
+});
+
 describe('arity / shape mutations', () => {
   it('rejects missing subtree', () => {
     const r = checkProgram(

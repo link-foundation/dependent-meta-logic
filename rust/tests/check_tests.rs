@@ -69,10 +69,7 @@ fn matches_proofs_emitted_by_evaluator() {
 
 #[test]
 fn rejects_wrong_rule_for_structural_equality() {
-    let r = check_program(
-        "(a: a is a)\n(? (a = a))",
-        "(by numeric-equality (a a))",
-    );
+    let r = check_program("(a: a is a)\n(? (a = a))", "(by numeric-equality (a a))");
     assert!(!r.is_ok());
     assert!(r.errors[0].message.contains("numeric-equality"));
 }
@@ -81,20 +78,14 @@ fn rejects_wrong_rule_for_structural_equality() {
 fn rejects_assigned_rule_when_no_assignment_exists() {
     // No `((a = a) has probability ...)` declared — the kernel would
     // pick `structural-equality`. Claiming `assigned-equality` must fail.
-    let r = check_program(
-        "(a: a is a)\n(? (a = a))",
-        "(by assigned-equality (a a))",
-    );
+    let r = check_program("(a: a is a)\n(? (a = a))", "(by assigned-equality (a a))");
     assert!(!r.is_ok());
 }
 
 #[test]
 fn rejects_swapped_arithmetic_rule() {
     // `(by sum ...)` for `(1 - 2)` is wrong; the kernel would pick `difference`.
-    let r = check_program(
-        "(? (1 - 2))",
-        "(by sum (by literal 1) (by literal 2))",
-    );
+    let r = check_program("(? (1 - 2))", "(by sum (by literal 1) (by literal 2))");
     assert!(!r.is_ok());
 }
 
@@ -115,40 +106,57 @@ fn rejects_wrong_operands_in_equality_pair() {
 
 #[test]
 fn rejects_wrong_literal_inside_arithmetic_subtree() {
-    let r = check_program(
-        "(? (1 + 2))",
-        "(by sum (by literal 1) (by literal 5))",
-    );
+    let r = check_program("(? (1 + 2))", "(by sum (by literal 1) (by literal 5))");
     assert!(!r.is_ok());
     assert!(r.errors[0].message.contains("5"));
+}
+
+// ===== Mutation: leaf payloads =====
+
+#[test]
+fn rejects_wrong_reduce_payload() {
+    let r = check_program("(? (mystery 1))", "(by reduce (different 2))");
+    assert!(!r.is_ok());
+}
+
+#[test]
+fn rejects_wrong_definition_payload() {
+    let r = check_program("(? (foo: bar))", "(by definition (bar: foo))");
+    assert!(!r.is_ok());
+}
+
+#[test]
+fn rejects_wrong_configuration_payload() {
+    let r = check_program("(? (range 0 1))", "(by configuration valence 9)");
+    assert!(!r.is_ok());
+}
+
+#[test]
+fn rejects_wrong_assigned_probability_payload() {
+    let r = check_program(
+        "(? ((a = a) has probability 0.7))",
+        "(by assigned-probability (b = b) 0.2)",
+    );
+    assert!(!r.is_ok());
 }
 
 // ===== Mutation: arity / shape =====
 
 #[test]
 fn rejects_missing_subtree() {
-    let r = check_program(
-        "(? (1 + 2))",
-        "(by sum (by literal 1))",
-    );
+    let r = check_program("(? (1 + 2))", "(by sum (by literal 1))");
     assert!(!r.is_ok());
 }
 
 #[test]
 fn rejects_extra_subtree() {
-    let r = check_program(
-        "(? (not 0))",
-        "(by not (by literal 0) (by literal 0))",
-    );
+    let r = check_program("(? (not 0))", "(by not (by literal 0) (by literal 0))");
     assert!(!r.is_ok());
 }
 
 #[test]
 fn rejects_non_by_node_at_top_level() {
-    let r = check_program(
-        "(? (a = a))",
-        "(structural-equality (a a))",
-    );
+    let r = check_program("(? (a = a))", "(structural-equality (a a))");
     assert!(!r.is_ok());
 }
 

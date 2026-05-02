@@ -63,9 +63,7 @@ fn collect_assignments(forms: &[Node]) -> HashSet<String> {
     for f in forms {
         if let Node::List(c) = f {
             if c.len() == 4 {
-                if let (Node::Leaf(w1), Node::Leaf(w2), Node::Leaf(w3)) =
-                    (&c[1], &c[2], &c[3])
-                {
+                if let (Node::Leaf(w1), Node::Leaf(w2), Node::Leaf(w3)) = (&c[1], &c[2], &c[3]) {
                     if w1 == "has" && w2 == "probability" && is_num(w3) {
                         if let Node::List(inner) = &c[0] {
                             out.insert(key_of(&c[0]));
@@ -150,11 +148,7 @@ fn decode<'a>(p: &'a Node, path: &[String]) -> Result<(String, &'a [Node]), Chec
 // The single rule the kernel would emit for `expr`. Equality is the only
 // shape with multiple admissible rules (assigned/structural/numeric); we
 // pick the unique one matching the program facts.
-fn expected_rule(
-    expr: &Node,
-    ops: &HashSet<String>,
-    assigned: &HashSet<String>,
-) -> &'static str {
+fn expected_rule(expr: &Node, ops: &HashSet<String>, assigned: &HashSet<String>) -> &'static str {
     match expr {
         Node::Leaf(s) => {
             if is_num(s) {
@@ -328,18 +322,25 @@ fn check_node(
         // Leaves
         "literal" => arity(&rule, subs, 1, path).and_then(|_| match (&subs[0], expr) {
             (Node::Leaf(n), Node::Leaf(en)) if is_num(n) && n == en => Ok(rule),
-            _ => Err(err(path, format!("literal `{}` ≠ `{}`", key_of(&subs[0]), key_of(expr)))),
+            _ => Err(err(
+                path,
+                format!("literal `{}` ≠ `{}`", key_of(&subs[0]), key_of(expr)),
+            )),
         }),
         "symbol" => arity(&rule, subs, 1, path).and_then(|_| match (&subs[0], expr) {
             (Node::Leaf(s), Node::Leaf(es)) if s == es => Ok(rule),
-            _ => Err(err(path, format!("symbol `{}` ≠ `{}`", key_of(&subs[0]), key_of(expr)))),
+            _ => Err(err(
+                path,
+                format!("symbol `{}` ≠ `{}`", key_of(&subs[0]), key_of(expr)),
+            )),
         }),
-        // Top-level forms: definitions, configuration, assignment — the
-        // kernel produces these without sub-derivations to recurse into,
-        // so structural equality of the witness payload is enough.
-        "definition" | "configuration" | "assigned-probability" => Ok(rule),
+        // Top-level leaf-like forms carry payloads that must match the
+        // expression exactly, even though there are no sub-derivations.
+        "definition" => check_payload(&rule, subs, &[expr.clone()], path),
+        "configuration" => check_configuration(expr, &rule, subs, path),
+        "assigned-probability" => check_assigned_probability(expr, &rule, subs, path),
         "query" => Err(err(path, "stray `query` rule (stripped by checker)".into())),
-        "reduce" => Ok(rule),
+        "reduce" => check_payload(&rule, subs, &[expr.clone()], path),
         // Infix arithmetic
         "sum" | "difference" | "product" | "quotient" => {
             let op = match rule.as_str() {
@@ -366,10 +367,12 @@ fn check_node(
             _ => Err(err(path, format!("`not` ≠ `{}`", key_of(expr)))),
         }),
         // Equality / inequality
-        "structural-equality" | "numeric-equality" | "assigned-equality"
-        | "structural-inequality" | "numeric-inequality" | "assigned-inequality" => {
-            check_eq(expr, &rule, subs, ops, assigned, path)
-        }
+        "structural-equality"
+        | "numeric-equality"
+        | "assigned-equality"
+        | "structural-inequality"
+        | "numeric-inequality"
+        | "assigned-inequality" => check_eq(expr, &rule, subs, ops, assigned, path),
         // Type-system witnesses
         "type-universe" | "prop" | "pi-formation" | "lambda-formation" | "type-query"
         | "type-check" => check_typesys(expr, &rule, subs, path),
@@ -390,7 +393,10 @@ fn check_node(
 }
 
 fn err(path: &[String], message: String) -> CheckError {
-    CheckError { path: path.to_vec(), message }
+    CheckError {
+        path: path.to_vec(),
+        message,
+    }
 }
 
 fn arity(rule: &str, subs: &[Node], n: usize, path: &[String]) -> Result<(), CheckError> {
@@ -402,6 +408,68 @@ fn arity(rule: &str, subs: &[Node], n: usize, path: &[String]) -> Result<(), Che
             format!("rule `{}` expects {} sub(s), got {}", rule, n, subs.len()),
         ))
     }
+}
+
+fn check_payload(
+    rule: &str,
+    subs: &[Node],
+    expected: &[Node],
+    path: &[String],
+) -> Result<String, CheckError> {
+    arity(rule, subs, expected.len(), path)?;
+    for (i, want) in expected.iter().enumerate() {
+        if !is_structurally_same(&subs[i], want) {
+            return Err(err(
+                path,
+                format!("payload {} `{}` ≠ `{}`", i, key_of(&subs[i]), key_of(want)),
+            ));
+        }
+    }
+    Ok(rule.into())
+}
+
+fn check_configuration(
+    expr: &Node,
+    rule: &str,
+    subs: &[Node],
+    path: &[String],
+) -> Result<String, CheckError> {
+    match expr {
+        Node::List(c) if c.len() == 3 => match (&c[0], &c[1], &c[2]) {
+            (Node::Leaf(h), lo, hi) if h == "range" => check_payload(
+                rule,
+                subs,
+                &[Node::Leaf("range".into()), lo.clone(), hi.clone()],
+                path,
+            ),
+            _ => Err(err(path, format!("`{}` ≠ `{}`", rule, key_of(expr)))),
+        },
+        Node::List(c) if c.len() == 2 => match (&c[0], &c[1]) {
+            (Node::Leaf(h), v) if h == "valence" => {
+                check_payload(rule, subs, &[Node::Leaf("valence".into()), v.clone()], path)
+            }
+            _ => Err(err(path, format!("`{}` ≠ `{}`", rule, key_of(expr)))),
+        },
+        _ => Err(err(path, format!("`{}` ≠ `{}`", rule, key_of(expr)))),
+    }
+}
+
+fn check_assigned_probability(
+    expr: &Node,
+    rule: &str,
+    subs: &[Node],
+    path: &[String],
+) -> Result<String, CheckError> {
+    if let Node::List(c) = expr {
+        if c.len() == 4 {
+            if let (Node::Leaf(w1), Node::Leaf(w2)) = (&c[1], &c[2]) {
+                if w1 == "has" && w2 == "probability" {
+                    return check_payload(rule, subs, &[c[0].clone(), c[3].clone()], path);
+                }
+            }
+        }
+    }
+    Err(err(path, format!("`{}` ≠ `{}`", rule, key_of(expr))))
 }
 
 // True when `rule` is the bare name of a prefix operator applied at expr.
@@ -531,10 +599,7 @@ fn check_eq(
                     if exp == rule {
                         return Ok(rule.into());
                     }
-                    return Err(err(
-                        path,
-                        format!("rule `{}` ≠ expected `{}`", rule, exp),
-                    ));
+                    return Err(err(path, format!("rule `{}` ≠ expected `{}`", rule, exp)));
                 }
             }
         }
@@ -548,7 +613,12 @@ fn check_typesys(
     subs: &[Node],
     path: &[String],
 ) -> Result<String, CheckError> {
-    let bad = |reason: &str| Err(err(path, format!("`{}` ≠ `{}` ({})", rule, key_of(expr), reason)));
+    let bad = |reason: &str| {
+        Err(err(
+            path,
+            format!("`{}` ≠ `{}` ({})", rule, key_of(expr), reason),
+        ))
+    };
     if let Node::List(c) = expr {
         match (rule, c.len()) {
             ("type-universe", 2) => {
@@ -571,7 +641,11 @@ fn check_typesys(
             }
             ("pi-formation", 3) | ("lambda-formation", 3) => {
                 arity(rule, subs, 2, path)?;
-                let head = if rule == "pi-formation" { "Pi" } else { "lambda" };
+                let head = if rule == "pi-formation" {
+                    "Pi"
+                } else {
+                    "lambda"
+                };
                 if let Node::Leaf(h) = &c[0] {
                     if h == head
                         && is_structurally_same(&c[1], &subs[0])
@@ -660,7 +734,10 @@ pub fn check_program(program_src: &str, proofs_src: &str) -> CheckResult {
     for (i, (q, p)) in queries.iter().zip(proof_forms.iter()).enumerate() {
         let path = vec![format!("query[{}]", i)];
         match check_node(q, p, &ops, &assigned, &path) {
-            Ok(rule) => result.ok.push(CheckOk { rule, expr: key_of(q) }),
+            Ok(rule) => result.ok.push(CheckOk {
+                rule,
+                expr: key_of(q),
+            }),
             Err(e) => result.errors.push(e),
         }
     }
@@ -675,19 +752,13 @@ mod sanity {
 
     #[test]
     fn smoke_structural_equality() {
-        assert!(check_program(
-            "(a: a is a)\n(? (a = a))",
-            "(by structural-equality (a a))"
-        )
-        .is_ok());
+        assert!(
+            check_program("(a: a is a)\n(? (a = a))", "(by structural-equality (a a))").is_ok()
+        );
     }
 
     #[test]
     fn smoke_mutated_rule_fails() {
-        assert!(!check_program(
-            "(a: a is a)\n(? (a = a))",
-            "(by numeric-equality (a a))"
-        )
-        .is_ok());
+        assert!(!check_program("(a: a is a)\n(? (a = a))", "(by numeric-equality (a a))").is_ok());
     }
 }
