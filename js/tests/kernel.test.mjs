@@ -6,7 +6,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { evaluate } from '../src/rml-links.mjs';
+import { Env, evaluate, evalNode, isConvertible } from '../src/rml-links.mjs';
 
 function evaluateClean(src) {
   const out = evaluate(src);
@@ -56,6 +56,43 @@ describe('kernel typing rules', () => {
 (? (apply (lambda (Natural x) (x + 0.1)) 0.2))
 `);
     assert.deepStrictEqual(results, [1, 1, 0.3]);
+  });
+
+  it('decides definitional equality by beta-normalizing terms', () => {
+    const results = evaluateClean(`
+(? ((apply (lambda (Natural x) x) 0) = 0))
+(? ((pair (apply (lambda (Natural x) x) y)) = (pair y)))
+(? ((pair x) = (pair y)))
+`);
+    assert.deepStrictEqual(results, [1, 1, 0]);
+  });
+
+  it('uses explicit equality assignments before conversion', () => {
+    const results = evaluateClean(`
+(Natural: (Type 0) Natural)
+(zero: Natural zero)
+(identity: lambda (Natural x) x)
+(((apply identity zero) = zero) has probability 0.5)
+(? ((apply identity zero) = zero))
+`);
+    assert.deepStrictEqual(results, [0.5]);
+  });
+
+  it('exposes isConvertible for beta, assignment lookup, and opt-in eta', () => {
+    const env = new Env();
+    evalNode(['zero:', 'Natural', 'zero'], env);
+    evalNode(['identity:', 'lambda', ['Natural', 'x'], 'x'], env);
+    evalNode([['zero', '=', 'alias'], 'has', 'probability', '1'], env);
+    assert.strictEqual(isConvertible(['apply', 'identity', 'zero'], 'zero', env), true);
+    assert.strictEqual(isConvertible('zero', 'alias', env), true);
+    assert.strictEqual(
+      isConvertible(['lambda', ['Natural', 'x'], ['apply', 'f', 'x']], 'f', env),
+      false,
+    );
+    assert.strictEqual(
+      isConvertible(['lambda', ['Natural', 'x'], ['apply', 'f', 'x']], 'f', env, { eta: true }),
+      true,
+    );
   });
 
   it('beta-reduces open terms without evaluating free variables as probabilities', () => {

@@ -3,7 +3,8 @@
 This document specifies the typed-kernel surface implemented by the
 JavaScript and Rust evaluators. It is the D1 contract from issue #37:
 the rules for `Pi`, `lambda`, `apply`, capture-avoiding substitution,
-freshness, type membership with `of`, and type queries with `(type of ...)`.
+freshness, type membership with `of`, type queries with `(type of ...)`,
+and the D3 convertibility check used by equality.
 
 RML remains a dynamic axiomatic system. These rules install and query type
 facts in the evaluator environment; they are not yet a full bidirectional
@@ -174,6 +175,39 @@ Gamma |- (apply f a) : B[x := a]
 
 The evaluator realizes the reduction path today. Full type checking of the
 argument against the domain belongs to the later bidirectional checker.
+
+## Definitional Equality
+
+`isConvertible(t1, t2, ctx)` decides whether two terms are equal after
+kernel reduction. The JavaScript API is exported as `isConvertible`; the
+Rust API is `is_convertible`.
+
+Default conversion:
+
+1. Look up explicit equality assignments, in both prefix and infix forms.
+2. Beta-normalize both terms, including redexes nested inside larger terms.
+3. Compare the normalized terms structurally.
+
+For evaluator equality queries, assignment lookup still takes precedence
+over conversion:
+
+```lino
+(((apply identity zero) = zero) has probability 0.5)
+(? ((apply identity zero) = zero))  # -> 0.5
+```
+
+If no assignment or conversion applies, equality falls back to numeric
+comparison only when both sides are explicitly numeric or computable from
+numeric operators. Unassigned symbolic terms do not collapse to the default
+unknown probability:
+
+```lino
+(? ((pair (apply (lambda (Natural x) x) y)) = (pair y)))  # -> 1
+(? ((pair x) = (pair y)))                                # -> 0
+```
+
+Eta-conversion is available only through the convertibility API option
+(`{ eta: true }` in JavaScript, `ConvertOptions { eta: true }` in Rust).
 
 ## Substitution
 
