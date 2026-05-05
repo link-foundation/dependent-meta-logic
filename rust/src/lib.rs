@@ -428,6 +428,35 @@ pub fn parse_one(tokens: &[String]) -> Result<Node, String> {
     Ok(ast)
 }
 
+/// Higher-order abstract syntax (issue #51, D7): rewrite the surface keyword
+/// `forall` to the kernel binder `Pi`. Both forms share identical structure
+/// `(<binder> (Type x) body)`, so the desugarer walks the AST and rewrites
+/// the head leaf in place. Object-language binders are encoded as
+/// host-language `lambda` and `Pi`/`forall`, letting substitution and
+/// capture-avoidance reuse the kernel primitives without a separate
+/// object-level binder representation.
+pub fn desugar_hoas(node: Node) -> Node {
+    match node {
+        Node::Leaf(_) => node,
+        Node::List(children) => {
+            let mapped: Vec<Node> = children.into_iter().map(desugar_hoas).collect();
+            if mapped.len() == 3 {
+                if let Node::Leaf(ref head) = mapped[0] {
+                    if head == "forall" {
+                        let mut rewritten = Vec::with_capacity(3);
+                        rewritten.push(Node::Leaf("Pi".to_string()));
+                        let mut iter = mapped.into_iter();
+                        iter.next();
+                        rewritten.extend(iter);
+                        return Node::List(rewritten);
+                    }
+                }
+            }
+            Node::List(mapped)
+        }
+    }
+}
+
 /// Check if a string is numeric (including negative).
 pub fn is_num(s: &str) -> bool {
     let s = s.trim();
@@ -1996,7 +2025,7 @@ fn parse_term_input_str(s: &str) -> Node {
     if trimmed.starts_with('(') {
         let toks = tokenize_one(trimmed);
         if let Ok(parsed) = parse_one(&toks) {
-            return parsed;
+            return desugar_hoas(parsed);
         }
     }
     Node::Leaf(s.to_string())
@@ -3071,6 +3100,18 @@ pub fn is_total(env: &Env, rel_name: &str) -> TotalityResult {
 
 /// Evaluate an AST node in the given environment.
 pub fn eval_node(node: &Node, env: &mut Env) -> EvalResult {
+    // HOAS desugaring (issue #51, D7): rewrite `(forall (A x) body)` to
+    // `(Pi (A x) body)` so callers passing AST nodes directly to `eval_node`
+    // benefit from the same surface as `evaluate()` / `parse_term_input_str`.
+    // The recursive walk also handles `forall` nested inside definition RHSs
+    // such as `(succ: (forall (Natural n) Natural))`.
+    let desugared;
+    let node = if matches!(node, Node::List(_)) {
+        desugared = desugar_hoas(node.clone());
+        &desugared
+    } else {
+        node
+    };
     match node {
         Node::Leaf(s) => {
             if is_num(s) {
@@ -4453,7 +4494,7 @@ fn evaluate_inner(text: &str, file: Option<&str>, env: &mut Env, options: &Evalu
         .filter_map(|link_str| {
             let toks = tokenize_one(link_str);
             match parse_one(&toks) {
-                Ok(node) => Some(node),
+                Ok(node) => Some(desugar_hoas(node)),
                 Err(msg) => {
                     diagnostics.push(Diagnostic::new(
                         "E002",

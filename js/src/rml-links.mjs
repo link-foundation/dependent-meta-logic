@@ -406,6 +406,23 @@ class Env {
   }
 }
 
+// ---------- HOAS desugarer ----------
+// Higher-order abstract syntax (issue #51, D7): the surface keyword `forall`
+// is sugar for `Pi`. Both binders share identical structure
+// `(<binder> (Type x) body)`, so the desugarer walks the AST and rewrites the
+// head leaf in place. Object-language binders are encoded as host-language
+// `lambda` and `Pi`/`forall` so substitution and capture-avoidance reuse the
+// kernel primitives — no separate object-level binder representation is
+// required.
+function desugarHoas(node) {
+  if (!Array.isArray(node)) return node;
+  const mapped = node.map(desugarHoas);
+  if (mapped.length === 3 && mapped[0] === 'forall') {
+    return ['Pi', mapped[1], mapped[2]];
+  }
+  return mapped;
+}
+
 // ---------- Binding parser ----------
 // Parse a binding form in two supported syntaxes:
 // 1. Colon form: (x: A) as ['x:', A] — standard LiNo link definition syntax
@@ -896,12 +913,12 @@ function conversionOptionsFrom(ctx, options) {
 }
 
 function parseTermInput(term) {
-  if (Array.isArray(term)) return term;
+  if (Array.isArray(term)) return desugarHoas(term);
   if (typeof term !== 'string') return String(term);
   const trimmed = term.trim();
   if (trimmed.startsWith('(')) {
     try {
-      return parseOne(tokenizeOne(trimmed));
+      return desugarHoas(parseOne(tokenizeOne(trimmed)));
     } catch (_) {
       return term;
     }
@@ -1369,6 +1386,15 @@ function evalNode(node, env){
     if (isNum(node)) return env.toNum(node);
     // bare symbol → optional prior probability if set; otherwise irrelevant in calc
     return env.getSymbolProb(node);
+  }
+
+  // HOAS desugaring (issue #51, D7): rewrite `(forall (A x) body)` to
+  // `(Pi (A x) body)` so callers passing AST nodes directly to `evalNode`
+  // benefit from the same surface as `evaluate()` / `parseLinoForms`. The
+  // recursive walk also handles `forall` nested inside definition RHSs such
+  // as `(succ: (forall (Natural n) Natural))`.
+  if (Array.isArray(node)) {
+    node = desugarHoas(node);
   }
 
   // Definitions & operator redefs:  (head: ...)
@@ -2290,7 +2316,7 @@ function parseLinoForms(text) {
     })
     .map(linkStr => {
       const toks = tokenizeOne(String(linkStr));
-      return parseOne(toks);
+      return desugarHoas(parseOne(toks));
     });
 }
 
