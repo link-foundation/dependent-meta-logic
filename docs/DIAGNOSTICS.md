@@ -84,6 +84,11 @@ The exit code is `1` whenever any diagnostic is emitted, `0` otherwise.
 | `E008` | Shadowing warning: a top-level definition rebinds a name introduced by an earlier `(import …)`. Triggered, for example, by `(import "lib.lino") (myop: max)` when `lib.lino` already defines `myop`. The redefinition still takes effect — `E008` is informational, not fatal. |
 | `E009` | Namespace or alias error: invalid namespace name (empty or dotted, e.g. `(namespace foo.bar)`), or an alias collision between two `(import "..." as <alias>)` directives in the same file. |
 | `E010` | Freshness error: `(fresh x in body)` tried to introduce a name that already appears in the current evaluator context. |
+| `E020` | Bidirectional checker: `synth(term)` could not infer a type — e.g. a bare symbol with no recorded type, or a malformed universe level. |
+| `E021` | Bidirectional checker: definitional type mismatch. Either `check(term, T)` synthesised a different type, or a lambda parameter type does not agree with the Pi domain it is checked against. |
+| `E022` | Bidirectional checker: application head does not synthesise to a Pi-type. Triggered by `(apply f a)` where `f` lacks a Pi annotation. |
+| `E023` | Bidirectional checker: lambda checked against a non-Pi expected type. Triggered by `check((lambda (A x) body), T)` where `T` is not of the form `(Pi (...) ...)`. |
+| `E024` | Bidirectional checker: malformed binder in a `Pi` or `lambda` form. Triggered when the second child is not a recognisable `(Type x)` or `(x: Type)` pair. |
 
 Codes are stable identifiers — they do not change between releases unless we
 explicitly note a breaking change in the changelog. The accompanying
