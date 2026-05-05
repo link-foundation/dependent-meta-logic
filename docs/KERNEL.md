@@ -208,6 +208,72 @@ Gamma |- (apply f a) : B[x := a]
 The evaluator realizes the reduction path today. Full type checking of the
 argument against the domain belongs to the later bidirectional checker.
 
+## Higher-Order Abstract Syntax (HOAS)
+
+Object-language binders are encoded with the host-language binders of the
+kernel (`lambda`, `Pi`, and `fresh`). This is the Higher-Order Abstract
+Syntax pattern: a binder in the language being modelled is represented by
+the host's `lambda`/`Pi`, so capture-avoiding substitution and freshness are
+inherited from the kernel rather than reimplemented per object language.
+
+The desugarer in the parser accepts the surface keyword `forall` as a
+synonym for the kernel's `Pi`:
+
+```lino
+(forall (Natural x) ((x + 0) = x))
+; desugars to
+(Pi (Natural x) ((x + 0) = x))
+```
+
+The rewrite is structural: every `(forall (A x) body)` form is rewritten to
+`(Pi (A x) body)` before evaluation, so the entire kernel surface (typing,
+beta-reduction, definitional equality, proofs) treats both spellings
+identically. The desugarer recurses, so nested occurrences in declaration
+right-hand sides also rewrite:
+
+```lino
+(Natural: (Type 0) Natural)
+(succ: (forall (Natural n) Natural))
+(? (succ of (Pi (Natural n) Natural)))  # -> 1
+(? (type of succ))                      # -> (Pi (Natural n) Natural)
+```
+
+### Encoding pattern
+
+A binder in the object language is represented by binding a host variable
+of the corresponding type. An identity at the object level becomes a host
+`lambda`, and the corresponding dependent type becomes a host `Pi` (or its
+sugar `forall`):
+
+```lino
+(Term: (Type 0) Term)
+(identity: lambda (Term x) x)
+
+(? (type of identity))                          # -> (Pi (Term x) Term)
+(? (identity of (Pi     (Term x) Term)))        # -> 1
+(? (identity of (forall (Term x) Term)))        # -> 1
+(? ((apply identity 0.42) = 0.42))              # -> 1
+```
+
+The kernel's substitution helper handles capture for free, so a binder in
+the object language never has to define its own renaming logic:
+
+```lino
+(? (apply (lambda (Natural x) (lambda (Natural y) (x + y))) y))
+# -> (lambda (Natural y_1) (y + y_1))
+```
+
+The shared example
+[`examples/lambda-calculus.lino`](../examples/lambda-calculus.lino) walks
+through the full encoding end-to-end and round-trips through both runtimes.
+
+### What the desugarer does not introduce
+
+`forall` is purely surface sugar. It does not introduce a new kernel form,
+a new proof witness rule, or any new diagnostic. Parametric Higher-Order
+Abstract Syntax (PHOAS) and weak HOAS variants stay out of scope — only the
+direct `forall` ⇒ `Pi` rewrite is provided here.
+
 ## Definitional Equality
 
 `isConvertible(t1, t2, ctx)` decides whether two terms are equal after
@@ -450,6 +516,49 @@ record number sorts, and equality with the expected type collapses through
 | `E022` | Application head does not synthesise to a Pi-type. |
 | `E023` | Lambda checked against a non-Pi expected type. |
 | `E024` | Malformed binder in `Pi` or `lambda`. |
+
+## Inductive Types
+
+The `(inductive Name (constructor …) …)` form (issue #45, D10) declares a
+new inductive type with a list of constructors. Each constructor is either
+a bare symbol — a constant inhabitant — or a name paired with an explicit
+`Pi` type that returns the inductive type. The kernel registers the type
+itself, every constructor under its declared signature, and a generated
+`Name-rec` eliminator with the standard dependent induction principle.
+
+Surface form:
+
+```
+(inductive Natural
+  (constructor zero)
+  (constructor (succ (Pi (Natural n) Natural))))
+```
+
+After this form is evaluated the env contains: `Natural` typed as
+`(Type 0)`, `zero` typed as `Natural`, `succ` typed as
+`(Pi (Natural n) Natural)`, and `Natural-rec` typed as a dependent Pi that
+takes a motive `(Pi (Natural _) (Type 0))`, one case per constructor (with
+inductive-hypothesis premises on each recursive parameter), and a target
+of type `Natural`, returning the motive applied to the target. The
+eliminator participates in the bidirectional checker just like any other
+typed term: `(? (type of Natural-rec))` returns the synthesised Pi-type,
+and `synth(Natural-rec)` returns the same node.
+
+Acceptance datatypes from the issue — `List`, `Vector` (length-indexed), and
+propositional `Eq` — are all definable through the same form. The kernel
+performs a syntactic positivity check on the constructor return type but
+does not currently enforce strict positivity beyond it; that work is
+tracked separately.
+
+Diagnostic codes (E033) cover declarations with: a missing or
+lowercase type name, an empty constructor list, a malformed constructor
+clause, a duplicate constructor name, or a `Pi` whose return type is not
+the inductive type itself.
+
+The dedicated tests are:
+
+- JavaScript: `js/tests/inductive.test.mjs`
+- Rust: `rust/tests/inductive_tests.rs`
 
 ## Example Contract
 

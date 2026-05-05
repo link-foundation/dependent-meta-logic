@@ -32,7 +32,7 @@ fn world_declaration_with_non_symbolic_name_is_e033() {
     let out = evaluate("(world (foo bar) (Natural))", None, None);
     assert_eq!(out.diagnostics.len(), 1);
     let d = &out.diagnostics[0];
-    assert_eq!(d.code, "E033");
+    assert_eq!(d.code, "E034");
     assert!(
         d.message.contains("must be a bare symbol"),
         "msg was: {}",
@@ -45,7 +45,7 @@ fn world_declaration_without_constant_list_is_e033() {
     let out = evaluate("(world plus)", None, None);
     assert_eq!(out.diagnostics.len(), 1);
     let d = &out.diagnostics[0];
-    assert_eq!(d.code, "E033");
+    assert_eq!(d.code, "E034");
     assert!(
         d.message.contains("must have shape"),
         "msg was: {}",
@@ -58,7 +58,7 @@ fn world_declaration_with_non_symbolic_constant_is_e033() {
     let out = evaluate("(world plus ((foo bar)))", None, None);
     assert_eq!(out.diagnostics.len(), 1);
     let d = &out.diagnostics[0];
-    assert_eq!(d.code, "E033");
+    assert_eq!(d.code, "E034");
     assert!(
         d.message.contains("must be a bare symbol"),
         "msg was: {}",
@@ -76,7 +76,7 @@ fn call_with_undeclared_constant_is_e033() {
     let e033: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E033")
+        .filter(|d| d.code == "E034")
         .collect();
     assert_eq!(e033.len(), 1);
     assert!(
@@ -96,7 +96,7 @@ fn call_with_only_declared_constants_passes() {
     let e033: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E033")
+        .filter(|d| d.code == "E034")
         .collect();
     assert_eq!(e033.len(), 0);
 }
@@ -107,7 +107,7 @@ fn call_with_only_numeric_args_passes() {
     let e033: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E033")
+        .filter(|d| d.code == "E034")
         .collect();
     assert_eq!(e033.len(), 0);
 }
@@ -118,7 +118,7 @@ fn call_without_world_declaration_is_unconstrained() {
     let e033: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E033")
+        .filter(|d| d.code == "E034")
         .collect();
     assert_eq!(e033.len(), 0);
 }
@@ -133,7 +133,7 @@ fn each_violating_call_is_reported_separately() {
     let e033: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E033")
+        .filter(|d| d.code == "E034")
         .collect();
     assert_eq!(e033.len(), 2);
 }
@@ -148,7 +148,7 @@ fn nested_term_violations_are_flagged() {
     let e033: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E033")
+        .filter(|d| d.code == "E034")
         .collect();
     assert_eq!(e033.len(), 1);
     assert!(
@@ -174,7 +174,7 @@ fn relation_clauses_are_not_world_checked() {
     let e033: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E033")
+        .filter(|d| d.code == "E034")
         .collect();
     assert_eq!(e033.len(), 0);
 }

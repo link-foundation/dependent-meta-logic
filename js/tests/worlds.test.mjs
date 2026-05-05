@@ -26,21 +26,21 @@ describe('(world ...) declarations are parsed and stored', () => {
   it('rejects a declaration with a non-symbolic relation name', () => {
     const out = evaluate('(world (foo bar) (Natural))');
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E033');
+    assert.strictEqual(out.diagnostics[0].code, 'E034');
     assert.match(out.diagnostics[0].message, /must be a bare symbol/);
   });
 
   it('rejects a declaration without an allowed-constant list', () => {
     const out = evaluate('(world plus)');
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E033');
+    assert.strictEqual(out.diagnostics[0].code, 'E034');
     assert.match(out.diagnostics[0].message, /must have shape/);
   });
 
   it('rejects a declaration whose constants are not bare symbols', () => {
     const out = evaluate('(world plus ((foo bar)))');
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E033');
+    assert.strictEqual(out.diagnostics[0].code, 'E034');
     assert.match(out.diagnostics[0].message, /must be a bare symbol/);
   });
 });
@@ -51,7 +51,7 @@ describe('call-site world checking', () => {
       '(world plus (Natural))\n' +
       '(? (plus 1 Boolean))',
     );
-    const e033 = out.diagnostics.filter(d => d.code === 'E033');
+    const e033 = out.diagnostics.filter(d => d.code === 'E034');
     assert.strictEqual(e033.length, 1);
     assert.match(e033[0].message, /Boolean/);
   });
@@ -61,7 +61,7 @@ describe('call-site world checking', () => {
       '(world plus (Natural))\n' +
       '(? (plus Natural Natural))',
     );
-    const e033 = out.diagnostics.filter(d => d.code === 'E033');
+    const e033 = out.diagnostics.filter(d => d.code === 'E034');
     assert.strictEqual(e033.length, 0);
   });
 
@@ -70,13 +70,13 @@ describe('call-site world checking', () => {
       '(world plus (Natural))\n' +
       '(? (plus 1 2))',
     );
-    const e033 = out.diagnostics.filter(d => d.code === 'E033');
+    const e033 = out.diagnostics.filter(d => d.code === 'E034');
     assert.strictEqual(e033.length, 0);
   });
 
   it('does not check calls when no world is declared', () => {
     const out = evaluate('(? (plus Foo Bar))');
-    const e033 = out.diagnostics.filter(d => d.code === 'E033');
+    const e033 = out.diagnostics.filter(d => d.code === 'E034');
     assert.strictEqual(e033.length, 0);
   });
 
@@ -86,7 +86,7 @@ describe('call-site world checking', () => {
       '(? (plus Boolean 1))\n' +
       '(? (plus 1 String))',
     );
-    const e033 = out.diagnostics.filter(d => d.code === 'E033');
+    const e033 = out.diagnostics.filter(d => d.code === 'E034');
     assert.strictEqual(e033.length, 2);
   });
 
@@ -95,7 +95,7 @@ describe('call-site world checking', () => {
       '(world plus (Natural))\n' +
       '(? (plus (succ Boolean) Natural))',
     );
-    const e033 = out.diagnostics.filter(d => d.code === 'E033');
+    const e033 = out.diagnostics.filter(d => d.code === 'E034');
     assert.strictEqual(e033.length, 1);
     assert.match(e033[0].message, /Boolean/);
   });
@@ -112,7 +112,7 @@ describe('relation declarations are independent from world checking', () => {
       '  (plus zero n n)\n' +
       '  (plus (succ m) n (succ (plus m n))))',
     );
-    const e033 = out.diagnostics.filter(d => d.code === 'E033');
+    const e033 = out.diagnostics.filter(d => d.code === 'E034');
     assert.strictEqual(e033.length, 0);
   });
 });
