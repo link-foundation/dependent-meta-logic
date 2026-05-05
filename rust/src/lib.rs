@@ -1903,6 +1903,479 @@ fn eval_fresh(var_name: &str, body: &Node, env: &mut Env) -> EvalResult {
     }
 }
 
+// ========== Bidirectional Type Checker (issue #42) ==========
+// Public API:
+//     synth(term, env)                 -> SynthResult { typ, diagnostics }
+//     check(term, expected_type, env)  -> CheckResult { ok, diagnostics }
+//
+// Mirrors the JavaScript `synth` / `check` helpers in `js/src/rml-links.mjs`.
+//
+// Synthesise mode walks the term and applies kernel rules for `(Type N)`,
+// `(Pi ...)`, `(lambda ...)`, `(apply ...)`, `(subst ...)`, `(type of ...)`,
+// and `(expr of T)`. Otherwise it falls back to the type recorded by
+// `eval_node` in `env.types`.
+//
+// Check mode prefers a direct lambda-vs-Pi rule that opens the binder and
+// recurses on the body; otherwise it switches modes by synthesising and
+// comparing with definitional convertibility (`is_convertible`). Numeric
+// literals accept any annotation — the kernel does not record number sorts
+// directly, and equality with the expected type collapses through
+// definitional convertibility downstream.
+//
+// Diagnostics use stable codes E020..E024 (see `docs/DIAGNOSTICS.md`).
+
+/// Result of a `synth` call: the synthesised type as an AST node (or `None`
+/// when synthesis fails) plus any diagnostics emitted along the way.
+#[derive(Debug, Clone, Default)]
+pub struct SynthResult {
+    pub typ: Option<Node>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Result of a `check` call: a boolean indicating whether the term checks
+/// against the expected type, plus any diagnostics emitted along the way.
+#[derive(Debug, Clone, Default)]
+pub struct CheckResult {
+    pub ok: bool,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+fn synth_span(env: &Env) -> Span {
+    env.current_span.clone().unwrap_or_else(|| env.default_span.clone())
+}
+
+fn type_key_to_node(type_key: &str) -> Node {
+    let trimmed = type_key.trim();
+    if trimmed.starts_with('(') {
+        let toks = tokenize_one(trimmed);
+        if let Ok(parsed) = parse_one(&toks) {
+            return parsed;
+        }
+    }
+    Node::Leaf(type_key.to_string())
+}
+
+fn parse_term_input_str(s: &str) -> Node {
+    let trimmed = s.trim();
+    if trimmed.starts_with('(') {
+        let toks = tokenize_one(trimmed);
+        if let Ok(parsed) = parse_one(&toks) {
+            return parsed;
+        }
+    }
+    Node::Leaf(s.to_string())
+}
+
+struct TypeBindingSnapshot {
+    name: String,
+    had_term: bool,
+    previous_type: Option<String>,
+}
+
+fn snapshot_type_binding(env: &Env, name: &str) -> TypeBindingSnapshot {
+    TypeBindingSnapshot {
+        name: name.to_string(),
+        had_term: env.terms.contains(name),
+        previous_type: env.types.get(name).cloned(),
+    }
+}
+
+fn extend_type_binding(env: &mut Env, name: &str, type_key: &str) {
+    env.terms.insert(name.to_string());
+    env.types.insert(name.to_string(), type_key.to_string());
+}
+
+fn restore_type_binding(env: &mut Env, snap: TypeBindingSnapshot) {
+    if !snap.had_term {
+        env.terms.remove(&snap.name);
+    }
+    if let Some(value) = snap.previous_type {
+        env.types.insert(snap.name, value);
+    } else {
+        env.types.remove(&snap.name);
+    }
+}
+
+fn types_agree(a: &Node, b: &Node, env: &mut Env) -> bool {
+    if is_structurally_same(a, b) {
+        return true;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| is_convertible(a, b, env)));
+    matches!(result, Ok(true))
+}
+
+fn synth_leaf(name: &str, env: &mut Env) -> Option<Node> {
+    if is_num(name) {
+        return None;
+    }
+    let leaf = Node::Leaf(name.to_string());
+    if let Some(recorded) = infer_type_key(&leaf, env) {
+        return Some(type_key_to_node(&recorded));
+    }
+    let resolved = env.resolve_qualified(name);
+    if resolved != name {
+        if let Some(recorded) = env.types.get(&resolved).cloned() {
+            return Some(type_key_to_node(&recorded));
+        }
+    }
+    None
+}
+
+fn synth_apply(children: &[Node], env: &mut Env, span: &Span, diagnostics: &mut Vec<Diagnostic>) -> Option<Node> {
+    let head = &children[1];
+    let arg = &children[2];
+    let inner = synth(head, env);
+    diagnostics.extend(inner.diagnostics);
+    let fn_type = match inner.typ {
+        Some(t) => t,
+        None => {
+            diagnostics.push(Diagnostic::new(
+                "E020",
+                format!(
+                    "Cannot synthesize type of `{}` in `{}`",
+                    key_of(head),
+                    key_of(&Node::List(children.to_vec()))
+                ),
+                span.clone(),
+            ));
+            return None;
+        }
+    };
+    let pi_children = match &fn_type {
+        Node::List(c) if c.len() == 3 && matches!(&c[0], Node::Leaf(s) if s == "Pi") => c.clone(),
+        _ => {
+            diagnostics.push(Diagnostic::new(
+                "E022",
+                format!(
+                    "Application head `{}` has type `{}`, expected a Pi-type",
+                    key_of(head),
+                    key_of(&fn_type)
+                ),
+                span.clone(),
+            ));
+            return None;
+        }
+    };
+    let (param_name, param_type_key) = match parse_binding(&pi_children[1]) {
+        Some(b) => b,
+        None => {
+            diagnostics.push(Diagnostic::new(
+                "E022",
+                format!(
+                    "Application head has malformed Pi binder `{}`",
+                    key_of(&pi_children[1])
+                ),
+                span.clone(),
+            ));
+            return None;
+        }
+    };
+    let domain_node = type_key_to_node(&param_type_key);
+    let arg_check = check(arg, &domain_node, env);
+    diagnostics.extend(arg_check.diagnostics);
+    if !arg_check.ok {
+        return None;
+    }
+    Some(subst(&pi_children[2], &param_name, arg))
+}
+
+fn synth_lambda(children: &[Node], env: &mut Env, span: &Span, diagnostics: &mut Vec<Diagnostic>) -> Option<Node> {
+    let (param_name, param_type_key) = match parse_binding(&children[1]) {
+        Some(b) => b,
+        None => {
+            diagnostics.push(Diagnostic::new(
+                "E024",
+                format!("Lambda has malformed binder `{}`", key_of(&children[1])),
+                span.clone(),
+            ));
+            return None;
+        }
+    };
+    let snap = snapshot_type_binding(env, &param_name);
+    extend_type_binding(env, &param_name, &param_type_key);
+    let body_synth = synth(&children[2], env);
+    restore_type_binding(env, snap);
+    diagnostics.extend(body_synth.diagnostics);
+    let body_type = body_synth.typ?;
+    Some(Node::List(vec![
+        Node::Leaf("Pi".to_string()),
+        Node::List(vec![
+            Node::Leaf(param_type_key),
+            Node::Leaf(param_name),
+        ]),
+        body_type,
+    ]))
+}
+
+fn synth_of_membership(children: &[Node], env: &mut Env, _span: &Span, diagnostics: &mut Vec<Diagnostic>) -> Option<Node> {
+    let result = check(&children[0], &children[2], env);
+    diagnostics.extend(result.diagnostics);
+    if !result.ok {
+        return None;
+    }
+    Some(Node::List(vec![
+        Node::Leaf("Type".to_string()),
+        Node::Leaf("0".to_string()),
+    ]))
+}
+
+/// Synthesise the type of `term` under `env`.
+///
+/// On success, `SynthResult.typ` carries the inferred type as a `Node` AST.
+/// On failure, `typ` is `None` and `diagnostics` carries one or more
+/// `E020..E024` diagnostics describing the obstruction.
+pub fn synth(term: &Node, env: &mut Env) -> SynthResult {
+    let span = synth_span(env);
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    match term {
+        Node::Leaf(name) => {
+            if let Some(t) = synth_leaf(name, env) {
+                return SynthResult { typ: Some(t), diagnostics };
+            }
+            if !is_num(name) {
+                diagnostics.push(Diagnostic::new(
+                    "E020",
+                    format!("Cannot synthesize type of symbol `{}`", name),
+                    span,
+                ));
+            }
+            SynthResult { typ: None, diagnostics }
+        }
+        Node::List(children) => {
+            // (Type N) : (Type N+1)
+            if children.len() == 2 {
+                if let Node::Leaf(head) = &children[0] {
+                    if head == "Type" {
+                        if let Some(univ) = universe_type_key(term) {
+                            return SynthResult {
+                                typ: Some(type_key_to_node(&univ)),
+                                diagnostics,
+                            };
+                        }
+                        diagnostics.push(Diagnostic::new(
+                            "E020",
+                            format!(
+                                "Universe `{}` has invalid level token `{}`",
+                                key_of(term),
+                                key_of(&children[1])
+                            ),
+                            span,
+                        ));
+                        return SynthResult { typ: None, diagnostics };
+                    }
+                }
+            }
+
+            // (Prop) : (Type 1)
+            if children.len() == 1 {
+                if let Node::Leaf(head) = &children[0] {
+                    if head == "Prop" {
+                        return SynthResult {
+                            typ: Some(Node::List(vec![
+                                Node::Leaf("Type".to_string()),
+                                Node::Leaf("1".to_string()),
+                            ])),
+                            diagnostics,
+                        };
+                    }
+                }
+            }
+
+            if children.len() == 3 {
+                if let Node::Leaf(head) = &children[0] {
+                    match head.as_str() {
+                        "Pi" => {
+                            if parse_binding(&children[1]).is_none() {
+                                diagnostics.push(Diagnostic::new(
+                                    "E024",
+                                    format!("Pi has malformed binder `{}`", key_of(&children[1])),
+                                    span,
+                                ));
+                                return SynthResult { typ: None, diagnostics };
+                            }
+                            return SynthResult {
+                                typ: Some(Node::List(vec![
+                                    Node::Leaf("Type".to_string()),
+                                    Node::Leaf("0".to_string()),
+                                ])),
+                                diagnostics,
+                            };
+                        }
+                        "lambda" => {
+                            let t = synth_lambda(children, env, &span, &mut diagnostics);
+                            return SynthResult { typ: t, diagnostics };
+                        }
+                        "apply" => {
+                            let t = synth_apply(children, env, &span, &mut diagnostics);
+                            return SynthResult { typ: t, diagnostics };
+                        }
+                        "type" => {
+                            if let Node::Leaf(of_kw) = &children[1] {
+                                if of_kw == "of" {
+                                    let inner = synth(&children[2], env);
+                                    diagnostics.extend(inner.diagnostics);
+                                    if inner.typ.is_some() {
+                                        return SynthResult {
+                                            typ: Some(Node::List(vec![
+                                                Node::Leaf("Type".to_string()),
+                                                Node::Leaf("0".to_string()),
+                                            ])),
+                                            diagnostics,
+                                        };
+                                    }
+                                    diagnostics.push(Diagnostic::new(
+                                        "E020",
+                                        format!(
+                                            "Cannot synthesize type referenced by `{}`",
+                                            key_of(term)
+                                        ),
+                                        span,
+                                    ));
+                                    return SynthResult { typ: None, diagnostics };
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // (expr of T)
+                if let Node::Leaf(of_kw) = &children[1] {
+                    if of_kw == "of" {
+                        let t = synth_of_membership(children, env, &span, &mut diagnostics);
+                        return SynthResult { typ: t, diagnostics };
+                    }
+                }
+            }
+
+            // (subst term x replacement)
+            if children.len() == 4 {
+                if let (Node::Leaf(head), Node::Leaf(name)) = (&children[0], &children[2]) {
+                    if head == "subst" {
+                        let reduced = subst(&children[1], name, &children[3]);
+                        let inner = synth(&reduced, env);
+                        diagnostics.extend(inner.diagnostics);
+                        return SynthResult { typ: inner.typ, diagnostics };
+                    }
+                }
+            }
+
+            // Fallback: types recorded by eval_node.
+            if let Some(recorded) = infer_type_key(term, env) {
+                return SynthResult {
+                    typ: Some(type_key_to_node(&recorded)),
+                    diagnostics,
+                };
+            }
+
+            diagnostics.push(Diagnostic::new(
+                "E020",
+                format!("Cannot synthesize type of `{}`", key_of(term)),
+                span,
+            ));
+            SynthResult { typ: None, diagnostics }
+        }
+    }
+}
+
+/// Check `term` against `expected_type` under `env`.
+///
+/// Returns `CheckResult { ok: true, diagnostics: [] }` on success.
+/// On failure, `ok` is `false` and `diagnostics` carries one or more
+/// `E020..E024` diagnostics describing the obstruction.
+pub fn check(term: &Node, expected_type: &Node, env: &mut Env) -> CheckResult {
+    let span = synth_span(env);
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Direct rule: (lambda (A x) body) checked against (Pi (A' y) B).
+    if let (Node::List(lc), Node::List(ec)) = (term, expected_type) {
+        if lc.len() == 3 && ec.len() == 3 {
+            let lambda_head = matches!(&lc[0], Node::Leaf(s) if s == "lambda");
+            let pi_head = matches!(&ec[0], Node::Leaf(s) if s == "Pi");
+            if lambda_head && pi_head {
+                let lambda_binding = parse_binding(&lc[1]);
+                let pi_binding = parse_binding(&ec[1]);
+                if let (Some((lname, ltype)), Some((pname, ptype))) = (lambda_binding, pi_binding) {
+                    let lparam_node = parse_term_input_str(&ltype);
+                    let pparam_node = parse_term_input_str(&ptype);
+                    if !types_agree(&lparam_node, &pparam_node, env) {
+                        diagnostics.push(Diagnostic::new(
+                            "E021",
+                            format!(
+                                "Lambda parameter type `{}` does not match Pi domain `{}`",
+                                ltype, ptype
+                            ),
+                            span,
+                        ));
+                        return CheckResult { ok: false, diagnostics };
+                    }
+                    let codomain = subst(&ec[2], &pname, &Node::Leaf(lname.clone()));
+                    let snap = snapshot_type_binding(env, &lname);
+                    extend_type_binding(env, &lname, &ltype);
+                    let body_result = check(&lc[2], &codomain, env);
+                    restore_type_binding(env, snap);
+                    diagnostics.extend(body_result.diagnostics);
+                    return CheckResult {
+                        ok: body_result.ok,
+                        diagnostics,
+                    };
+                }
+            }
+        }
+    }
+
+    // Lambda checked against non-Pi expected type.
+    if let Node::List(lc) = term {
+        if lc.len() == 3 && matches!(&lc[0], Node::Leaf(s) if s == "lambda") {
+            let expected_is_pi = matches!(
+                expected_type,
+                Node::List(ec) if ec.len() == 3 && matches!(&ec[0], Node::Leaf(s) if s == "Pi")
+            );
+            if !expected_is_pi {
+                diagnostics.push(Diagnostic::new(
+                    "E023",
+                    format!(
+                        "Lambda `{}` cannot check against non-Pi type `{}`",
+                        key_of(term),
+                        key_of(expected_type)
+                    ),
+                    span,
+                ));
+                return CheckResult { ok: false, diagnostics };
+            }
+        }
+    }
+
+    // Numeric literal: accept any non-empty annotation.
+    if let Node::Leaf(name) = term {
+        if is_num(name) {
+            return CheckResult { ok: true, diagnostics };
+        }
+    }
+
+    // Default mode-switch: synthesise and compare with definitional equality.
+    let synth_result = synth(term, env);
+    diagnostics.extend(synth_result.diagnostics);
+    let actual = match synth_result.typ {
+        Some(t) => t,
+        None => return CheckResult { ok: false, diagnostics },
+    };
+    let ok = types_agree(&actual, expected_type, env);
+    if !ok {
+        diagnostics.push(Diagnostic::new(
+            "E021",
+            format!(
+                "Type mismatch: `{}` has type `{}`, expected `{}`",
+                key_of(term),
+                key_of(&actual),
+                key_of(expected_type)
+            ),
+            span,
+        ));
+    }
+    CheckResult { ok, diagnostics }
+}
+
 // ========== Proof derivations (issue #35) ==========
 // A derivation is a Node tree of the form `(by <rule> <subderivation>...)`.
 // Building it on the same `Node` type as the AST means the existing

@@ -7,10 +7,11 @@ from issue #41: the rules for `Pi`, `lambda`, `apply`, capture-avoiding
 substitution, freshness, checked universe levels, type membership with `of`,
 type queries with `(type of ...)`, and equality conversion.
 
-RML remains a dynamic axiomatic system. These rules install and query type
-facts in the evaluator environment; they are not yet a full bidirectional
-checker with rejection diagnostics. That stricter layer is planned in the
-later typed-kernel issues.
+RML remains a dynamic axiomatic system. The query-style rules below install
+and read type facts in the evaluator environment; the
+[Bidirectional Checker](#bidirectional-type-checker) section documents the
+stricter mode-switching layer (`synth` / `check`) added in issue #42, which
+emits structured `E020`..`E024` diagnostics on rejection.
 
 ## Judgements
 
@@ -349,6 +350,107 @@ links with these rule names:
 | `(type of expr)` | `type-query` |
 | `(expr of Type)` | `type-check` |
 
+## Bidirectional Type Checker
+
+Issue #42 layers a mode-switching checker on top of the query rules above.
+Two functions form the public API:
+
+- `synth(term, env)` — infers the type of `term` and returns it as an AST
+  node, or `null`/`None` when synthesis fails.
+- `check(term, expected, env)` — verifies `term` against `expected` and
+  returns `ok: true` on success.
+
+Both helpers always return a `diagnostics` list. Successful runs return
+`diagnostics: []`; failures populate it with stable `E020`..`E024` codes
+(see [`DIAGNOSTICS.md`](./DIAGNOSTICS.md)). The checker never throws on
+user-visible errors — it always reports them through diagnostics so an
+editor or test runner can surface them with source spans.
+
+```js
+import { Env, evalNode, synth, check } from 'relative-meta-logic';
+
+const env = new Env();
+evalNode(['Natural:', ['Type', '0'], 'Natural'], env);
+evalNode(['zero:', 'Natural', 'zero'], env);
+evalNode(['identity:', 'lambda', ['Natural', 'x'], 'x'], env);
+
+synth('zero', env);
+// → { type: 'Natural', diagnostics: [] }
+
+check(['lambda', ['Natural', 'x'], 'x'],
+      ['Pi',     ['Natural', 'x'], 'Natural'], env);
+// → { ok: true, diagnostics: [] }
+
+check('zero', 'Boolean', env);
+// → { ok: false, diagnostics: [{ code: 'E021', message: 'Type mismatch: ...', span }] }
+```
+
+```rust
+use rml::{check, eval_node, synth, Env, Node};
+let mut env = Env::new(None);
+// ... eval_node declarations as above ...
+
+let result = synth(&Node::Leaf("zero".into()), &mut env);
+assert_eq!(rml::key_of(&result.typ.unwrap()), "Natural");
+```
+
+### Inference rules
+
+The synthesise direction (`Gamma |- e => T`) implements:
+
+```text
+(Type N) : (Type N+1)             — universe successor
+(Prop)   : (Type 1)               — propositional universe
+Gamma, x : A |- B is well-formed
+--------------------------------
+Gamma |- (Pi (A x) B) : (Type 0)
+
+Gamma, x : A |- body => B
+-------------------------------------------------
+Gamma |- (lambda (A x) body) : (Pi (A x) B)
+
+Gamma |- f => (Pi (A x) B)    Gamma |- a <= A
+-----------------------------------------------
+Gamma |- (apply f a) : B[x := a]
+
+Gamma |- (subst e x v) reduces to e'    Gamma |- e' => T
+--------------------------------------------------------
+Gamma |- (subst e x v) : T
+
+Gamma |- e => T                Gamma |- e <= T
+------------------------    -------------------
+(type of e) : (Type 0)       (e of T) : (Type 0)
+```
+
+### Checking rules
+
+The check direction (`Gamma |- e <= T`) prefers the direct lambda-vs-Pi
+rule and otherwise switches to synthesise + definitional convertibility:
+
+```text
+A == A'    Gamma, x : A |- body <= B[y := x]
+-------------------------------------------------------
+Gamma |- (lambda (A x) body) <= (Pi (A' y) B)
+
+Gamma |- e => T'    T' == T (definitionally)
+--------------------------------------------
+Gamma |- e <= T
+```
+
+Numeric literals accept any annotation in `check`; the kernel does not yet
+record number sorts, and equality with the expected type collapses through
+`isConvertible` downstream.
+
+### Diagnostic codes
+
+| Code | Trigger |
+|------|---------|
+| `E020` | Cannot synthesise a type — bare symbol with no recorded type, or malformed universe level. |
+| `E021` | Definitional type mismatch — synthesised type differs from the expected type, or lambda parameter type does not match the Pi domain. |
+| `E022` | Application head does not synthesise to a Pi-type. |
+| `E023` | Lambda checked against a non-Pi expected type. |
+| `E024` | Malformed binder in `Pi` or `lambda`. |
+
 ## Example Contract
 
 The shared example
@@ -360,5 +462,5 @@ rules must update the shared fixtures intentionally.
 
 The dedicated kernel tests are:
 
-- JavaScript: `js/tests/kernel.test.mjs`
-- Rust: `rust/tests/kernel_tests.rs`
+- JavaScript: `js/tests/kernel.test.mjs`, `js/tests/bidirectional.test.mjs`
+- Rust: `rust/tests/kernel_tests.rs`, `rust/tests/bidirectional_tests.rs`
