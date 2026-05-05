@@ -211,6 +211,19 @@ class Env {
     // calls. Stored as `name -> [clauseNode, clauseNode, ...]`, where each
     // clauseNode is the original AST list including the head symbol.
     this.relations = new Map();                 // name -> [clause, clause, ...]
+    // World declarations (issue #54, D16): each relation may declare an
+    // allow-list of constants permitted to appear free in its arguments
+    // via `(world <name> (<const>...))`. Relations without a recorded
+    // world are unconstrained (the feature is opt-in per relation).
+    this.worlds = new Map();                    // name -> [const, const, ...]
+    // Inductive declarations (issue #45, D10): `(inductive Name (constructor ...) ...)`
+    // records a first-class inductive datatype. Each entry stores the type
+    // name, the ordered list of constructors (each `{ name, type }`), and
+    // the name and Pi-type of the generated eliminator (`Name-rec`). The
+    // declaration form also installs the type, every constructor, and the
+    // eliminator into the standard term/type/lambda maps so existing kernel
+    // forms (`type of`, `of`, `apply`) work without further plumbing.
+    this.inductives = new Map();                // name -> { name, constructors, elimName, elimType }
     // Namespace state (issue #34): a file can declare `(namespace foo)`, which
     // prefixes every name it subsequently introduces with `foo.`. Imports can
     // be aliased via `(import "x.lino" as a)`, which records `a` -> the
@@ -406,6 +419,26 @@ class Env {
   }
 }
 
+// ---------- HOAS desugarer ----------
+// Higher-order abstract syntax (issue #51, D7): the surface keyword `forall`
+// is sugar for `Pi`. Both binders share identical structure
+// `(<binder> (Type x) body)`, so the desugarer walks the AST and rewrites the
+// head leaf in place. Object-language binders are encoded as host-language
+// `lambda` and `Pi`/`forall` so substitution and capture-avoidance reuse the
+// kernel primitives — no separate object-level binder representation is
+// required.
+function desugarHoas(node) {
+  if (!Array.isArray(node)) return node;
+  const mapped = node.map(desugarHoas);
+  // Rewrite `(forall (T x) body)` → `(Pi (T x) body)` only when the binder is
+  // a pair (HOAS synonym). A bare uppercase name, e.g. `(forall A body)`, is
+  // prenex-polymorphism sugar and must reach `synth`/`_isForallNode` intact.
+  if (mapped.length === 3 && mapped[0] === 'forall' && Array.isArray(mapped[1])) {
+    return ['Pi', mapped[1], mapped[2]];
+  }
+  return mapped;
+}
+
 // ---------- Binding parser ----------
 // Parse a binding form in three supported syntaxes:
 // 1. Colon form: (x: A) as ['x:', A] — standard LiNo link definition syntax
@@ -485,7 +518,8 @@ function parseBindings(binding) {
 const NON_VARIABLE_TOKENS = new Set([
   'lambda', 'Pi', 'fresh', 'in', 'subst', 'apply', 'type', 'of',
   'has', 'probability', 'with', 'proof', 'range', 'valence',
-  'namespace', 'import', 'as', 'is', '?', 'mode', 'relation', 'total',
+  'namespace', 'import', 'as', 'is', '?', 'mode', 'relation', 'total', 'world',
+  'inductive', 'constructor',
   '+', '-', '*', '/', '=', '!=', 'and', 'or', 'not', 'both', 'neither', 'nor',
 ]);
 
@@ -906,12 +940,12 @@ function conversionOptionsFrom(ctx, options) {
 }
 
 function parseTermInput(term) {
-  if (Array.isArray(term)) return term;
+  if (Array.isArray(term)) return desugarHoas(term);
   if (typeof term !== 'string') return String(term);
   const trimmed = term.trim();
   if (trimmed.startsWith('(')) {
     try {
-      return parseOne(tokenizeOne(trimmed));
+      return desugarHoas(parseOne(tokenizeOne(trimmed)));
     } catch (_) {
       return term;
     }
@@ -1312,6 +1346,318 @@ function isTotal(env, relName) {
   return { ok: diagnostics.length === 0, diagnostics };
 }
 
+// ---------- World declarations (issue #54, D16) ----------
+// `(world plus (Natural))` records the allow-list of constants permitted
+// to appear free in arguments to relation `plus`. The world checker
+// rejects relation calls whose arguments contain any other free constant
+// with a structured `E034` diagnostic. Relations without a recorded
+// world are unconstrained — the feature is opt-in per relation.
+function parseWorldForm(node) {
+  if (!Array.isArray(node) || node[0] !== 'world') return null;
+  if (node.length < 2 || typeof node[1] !== 'string') {
+    throw new RmlError('E034', 'World declaration: relation name must be a bare symbol');
+  }
+  const name = node[1];
+  if (node.length !== 3 || !Array.isArray(node[2])) {
+    throw new RmlError(
+      'E034',
+      `World declaration for "${name}" must have shape \`(world ${name} (<const>...))\``,
+    );
+  }
+  const allowed = [];
+  for (const item of node[2]) {
+    if (typeof item !== 'string') {
+      throw new RmlError(
+        'E034',
+        `World declaration for "${name}": each allowed constant must be a bare symbol`,
+      );
+    }
+    allowed.push(item);
+  }
+  return { name, allowed };
+}
+
+// Walk an argument expression and collect every free constant — i.e.
+// every leaf symbol that is not numeric, not a reserved keyword, and is
+// not bound by an enclosing `lambda`/`Pi`/`fresh` binder appearing
+// inside the same argument. The collected names are matched against the
+// world's `allowed` list to surface E034 violations.
+function collectFreeConstants(node, bound, out) {
+  if (typeof node === 'string') {
+    if (isNum(node)) return;
+    if (NON_VARIABLE_TOKENS.has(node)) return;
+    if (bound.has(node)) return;
+    if (!out.includes(node)) out.push(node);
+    return;
+  }
+  if (!Array.isArray(node)) return;
+  if (node.length >= 3 && (node[0] === 'lambda' || node[0] === 'Pi')
+      && Array.isArray(node[1]) && node[1].length === 2 && typeof node[1][1] === 'string') {
+    const ty = node[1][0];
+    if (typeof ty === 'string') {
+      if (!isNum(ty) && !NON_VARIABLE_TOKENS.has(ty) && !bound.has(ty) && !out.includes(ty)) {
+        out.push(ty);
+      }
+    } else {
+      collectFreeConstants(ty, bound, out);
+    }
+    const variable = node[1][1];
+    const wasBound = bound.has(variable);
+    bound.add(variable);
+    for (let i = 2; i < node.length; i++) {
+      collectFreeConstants(node[i], bound, out);
+    }
+    if (!wasBound) bound.delete(variable);
+    return;
+  }
+  if (node.length === 4 && node[0] === 'fresh' && node[2] === 'in' && typeof node[1] === 'string') {
+    const variable = node[1];
+    const wasBound = bound.has(variable);
+    bound.add(variable);
+    collectFreeConstants(node[3], bound, out);
+    if (!wasBound) bound.delete(variable);
+    return;
+  }
+  for (const child of node) {
+    collectFreeConstants(child, bound, out);
+  }
+}
+
+// Validate a relation call's arguments against its world declaration.
+// Returns the offending RmlError, or `null` when the call is consistent
+// (or no declaration exists).
+function checkWorldAtCall(name, args, env) {
+  const allowed = env.worlds.get(name);
+  if (!allowed) return null;
+  const violations = [];
+  for (const arg of args) {
+    const bound = new Set();
+    const found = [];
+    collectFreeConstants(arg, bound, found);
+    for (const sym of found) {
+      if (sym === name) continue;
+      if (allowed.includes(sym)) continue;
+      if (!violations.includes(sym)) violations.push(sym);
+    }
+  }
+  if (violations.length === 0) return null;
+  const listed = violations.map(s => `"${s}"`).join(', ');
+  return new RmlError(
+    'E034',
+    `World violation: "${name}" argument contains free constant${violations.length === 1 ? '' : 's'} ${listed} not in declared world`,
+  );
+}
+
+// ---------- Inductive declarations (issue #45, D10) ----------
+// `(inductive Name (constructor c1) (constructor (c2 (Pi (A x) ... Name))) ...)`
+// declares a first-class inductive datatype encoded as link signatures plus
+// a generated eliminator `Name-rec`. The declaration:
+//
+//   1. registers `Name : (Type 0)` as a typed term;
+//   2. installs every constructor — bare constants get type `Name`, while
+//      constructors written as `(c (Pi (A x) ... Name))` keep their Pi-type
+//      so existing `(type of c)` and `(c of (Pi ...))` queries succeed;
+//   3. synthesises the eliminator `Name-rec` and its dependent Pi-type from
+//      the declared constructors, mirroring the standard induction principle:
+//        Name-rec : (Pi (motive (Pi (Name _) (Type 0)))
+//                    (Pi (case_c1 (apply motive c1))
+//                      ...
+//                       (Pi (case_cN (... step type ...))
+//                          (Pi (target Name) (apply motive target)))))
+//      Each step type for a constructor with one or more recursive `Name`
+//      arguments includes one inductive-hypothesis premise `(apply motive arg)`
+//      per recursive position.
+//   4. records the inductive declaration on `env.inductives` for tooling.
+//
+// The declaration intentionally only requires a Pi-typed signature where
+// every parameter type is either a previously declared type (acceptable as
+// a non-recursive constructor argument) or `Name` itself (a recursive
+// position used to synthesise the inductive hypothesis). Strict positivity
+// beyond this syntactic check is out of scope (see Out of Scope in #45).
+
+function _isPiSig(node) {
+  return Array.isArray(node) && node.length === 3 && node[0] === 'Pi';
+}
+
+// Walk a (Pi (A x) (Pi (B y) ... R)) chain into an array of binder pairs and
+// the final result. Returns `null` when the shape is malformed.
+function _flattenPi(typeNode) {
+  const params = [];
+  let current = typeNode;
+  while (_isPiSig(current)) {
+    const binding = parseBinding(current[1]);
+    if (!binding) return null;
+    params.push({ name: binding.paramName, type: binding.paramType });
+    current = current[2];
+  }
+  return { params, result: current };
+}
+
+// Build a chain of nested Pi nodes from a list of `{ name, type }` parameters
+// and a final result node. With an empty parameter list returns the result
+// untouched, so callers can fold a single parameter list into a Pi-type
+// without special-casing.
+function _buildPi(params, result) {
+  let out = result;
+  for (let i = params.length - 1; i >= 0; i--) {
+    const p = params[i];
+    out = ['Pi', [p.type, p.name], out];
+  }
+  return out;
+}
+
+// Parse a single (constructor ...) clause into `{ name, params, type }`.
+// Accepts the two surface shapes:
+//   - `(constructor c)` — bare constant constructor of type `Name`.
+//   - `(constructor (c (Pi ...)))` — constructor with a Pi-typed signature.
+function parseConstructorClause(clause, typeName) {
+  if (!Array.isArray(clause) || clause[0] !== 'constructor' || clause.length !== 2) {
+    throw new RmlError(
+      'E033',
+      `Inductive declaration for "${typeName}": each clause must be \`(constructor <name>)\` or \`(constructor (<name> <pi-type>))\``,
+    );
+  }
+  const body = clause[1];
+  if (typeof body === 'string') {
+    return { name: body, params: [], type: typeName };
+  }
+  if (Array.isArray(body) && body.length === 2 && typeof body[0] === 'string' && _isPiSig(body[1])) {
+    const flat = _flattenPi(body[1]);
+    if (!flat) {
+      throw new RmlError(
+        'E033',
+        `Inductive declaration for "${typeName}": constructor "${body[0]}" has malformed Pi-type \`${keyOf(body[1])}\``,
+      );
+    }
+    if (typeof flat.result !== 'string' || flat.result !== typeName) {
+      throw new RmlError(
+        'E033',
+        `Inductive declaration for "${typeName}": constructor "${body[0]}" must return "${typeName}" (got "${typeof flat.result === 'string' ? flat.result : keyOf(flat.result)}")`,
+      );
+    }
+    return { name: body[0], params: flat.params, type: body[1] };
+  }
+  throw new RmlError(
+    'E033',
+    `Inductive declaration for "${typeName}": malformed constructor clause \`${keyOf(clause)}\``,
+  );
+}
+
+function parseInductiveForm(node) {
+  if (!Array.isArray(node) || node[0] !== 'inductive') return null;
+  if (node.length < 2 || typeof node[1] !== 'string') {
+    throw new RmlError('E033', 'Inductive declaration: type name must be a bare symbol');
+  }
+  const name = node[1];
+  if (!/^[A-Z]/.test(name)) {
+    throw new RmlError(
+      'E033',
+      `Inductive declaration for "${name}": type name must start with an uppercase letter`,
+    );
+  }
+  if (node.length < 3) {
+    throw new RmlError(
+      'E033',
+      `Inductive declaration for "${name}" must list at least one constructor`,
+    );
+  }
+  const constructors = [];
+  const seen = new Set();
+  for (let i = 2; i < node.length; i++) {
+    const ctor = parseConstructorClause(node[i], name);
+    if (seen.has(ctor.name)) {
+      throw new RmlError(
+        'E033',
+        `Inductive declaration for "${name}": constructor "${ctor.name}" is declared more than once`,
+      );
+    }
+    seen.add(ctor.name);
+    constructors.push(ctor);
+  }
+  return { name, constructors };
+}
+
+// Build the case (step) type for one constructor under the eliminator's
+// motive `m`. For a constructor `c : (Pi (A1 x1) ... (Pi (Ak xk) Name))`
+// the case type is:
+//
+//   (Pi (A1 x1) ... (Pi (Ak xk)
+//      (Pi (ih_j1 (apply m xj1)) ... (Pi (ih_jr (apply m xjr))
+//          (apply m (c x1 ... xk)))))
+//
+// where `xj1..xjr` are the parameters whose declared type is `Name` (i.e.
+// the recursive arguments). Constant constructors degenerate to
+// `(apply m c)`.
+function _buildCaseType(ctor, typeName, motiveVar) {
+  const recBinders = [];
+  for (let i = 0; i < ctor.params.length; i++) {
+    const p = ctor.params[i];
+    if (typeof p.type === 'string' && p.type === typeName) {
+      recBinders.push({
+        name: `ih_${p.name}`,
+        type: ['apply', motiveVar, p.name],
+      });
+    }
+  }
+  let ctorApplied;
+  if (ctor.params.length === 0) {
+    ctorApplied = ctor.name;
+  } else {
+    ctorApplied = [ctor.name, ...ctor.params.map(p => p.name)];
+  }
+  const motiveOnTarget = ['apply', motiveVar, ctorApplied];
+  const inner = _buildPi(recBinders, motiveOnTarget);
+  return _buildPi(ctor.params, inner);
+}
+
+// Compose the dependent eliminator type for `Name-rec`, given the parsed
+// inductive declaration. The motive parameter binds the symbol `_motive`
+// throughout, and each constructor case parameter binds `case_<ctorName>`.
+function buildEliminatorType(decl) {
+  const motiveVar = '_motive';
+  const motiveType = ['Pi', [decl.name, '_'], ['Type', '0']];
+  const caseParams = decl.constructors.map(c => ({
+    name: `case_${c.name}`,
+    type: _buildCaseType(c, decl.name, motiveVar),
+  }));
+  const targetVar = '_target';
+  const final = ['apply', motiveVar, targetVar];
+  const inner = _buildPi([{ name: targetVar, type: decl.name }], final);
+  const withCases = _buildPi(caseParams, inner);
+  return _buildPi([{ name: motiveVar, type: motiveType }], withCases);
+}
+
+// Record an inductive declaration on the environment: install the type, all
+// constructors, the eliminator name, and the eliminator's Pi-type.
+function registerInductive(env, decl) {
+  const storeType = env.qualifyName(decl.name);
+  env.terms.add(storeType);
+  env.setType(storeType, ['Type', '0']);
+  evalNode(['Type', '0'], env);
+
+  for (const ctor of decl.constructors) {
+    const storeName = env.qualifyName(ctor.name);
+    env.terms.add(storeName);
+    env.setType(storeName, ctor.type);
+    if (Array.isArray(ctor.type)) evalNode(ctor.type, env);
+  }
+
+  const elimName = `${decl.name}-rec`;
+  const elimType = buildEliminatorType(decl);
+  const storeElim = env.qualifyName(elimName);
+  env.terms.add(storeElim);
+  env.setType(storeElim, elimType);
+  evalNode(elimType, env);
+
+  env.inductives.set(decl.name, {
+    name: decl.name,
+    constructors: decl.constructors,
+    elimName,
+    elimType,
+  });
+  return 1;
+}
+
 // Check a call site `(name args...)` against any registered mode declaration
 // for `name`. Returns the offending RmlError on mismatch, or `null` when the
 // call is consistent (or no declaration exists).
@@ -1381,6 +1727,15 @@ function evalNode(node, env){
     return env.getSymbolProb(node);
   }
 
+  // HOAS desugaring (issue #51, D7): rewrite `(forall (A x) body)` to
+  // `(Pi (A x) body)` so callers passing AST nodes directly to `evalNode`
+  // benefit from the same surface as `evaluate()` / `parseLinoForms`. The
+  // recursive walk also handles `forall` nested inside definition RHSs such
+  // as `(succ: (forall (Natural n) Natural))`.
+  if (Array.isArray(node)) {
+    node = desugarHoas(node);
+  }
+
   // Definitions & operator redefs:  (head: ...)
   if (typeof node[0] === 'string' && node[0].endsWith(':')) {
     const head = node[0].slice(0,-1);
@@ -1412,6 +1767,30 @@ function evalNode(node, env){
     }
   }
 
+  // World declaration (issue #54, D16): (world <name> (<const>...))
+  // Records the allow-list of constants permitted to appear free in
+  // arguments of a relation. `parseWorldForm` throws E034 on a
+  // malformed declaration so the call sites do not have to handle
+  // shape-broken declarations defensively.
+  if (node[0] === 'world') {
+    const decl = parseWorldForm(node);
+    if (decl) {
+      env.worlds.set(decl.name, decl.allowed);
+      return 1;
+    }
+  }
+
+  // Inductive declaration (issue #45, D10): (inductive Name (constructor ...) ...)
+  // Records the inductive datatype, installs every constructor, and
+  // generates the eliminator `Name-rec` with a dependent Pi-type.
+  // `parseInductiveForm` throws E033 on a malformed declaration.
+  if (node[0] === 'inductive') {
+    const decl = parseInductiveForm(node);
+    if (decl) {
+      return registerInductive(env, decl);
+    }
+  }
+
   // Totality check (issue #44, D12): (total <name>) runs `isTotal` over
   // the recorded relation and turns each returned diagnostic into an
   // E032 RmlError. The first error short-circuits, mirroring how the
@@ -1434,6 +1813,14 @@ function evalNode(node, env){
   // points at the call rather than at a downstream beta-reduction.
   if (typeof node[0] === 'string' && env.modes.has(node[0])) {
     const err = checkModeAtCall(node[0], node.slice(1), env);
+    if (err) throw err;
+  }
+
+  // World-violation check (issue #54, D16): a call `(name args...)`
+  // whose head has a registered world declaration must only contain
+  // declared constants free in its arguments.
+  if (typeof node[0] === 'string' && env.worlds.has(node[0])) {
+    const err = checkWorldAtCall(node[0], node.slice(1), env);
     if (err) throw err;
   }
 
@@ -2338,7 +2725,7 @@ function parseLinoForms(text) {
     })
     .map(linkStr => {
       const toks = tokenizeOne(String(linkStr));
-      return parseOne(toks);
+      return desugarHoas(parseOne(toks));
     });
 }
 
@@ -3029,6 +3416,8 @@ export {
   synth,
   check,
   isTotal,
+  parseInductiveForm,
+  buildEliminatorType,
   formalizeSelectedInterpretation,
   evaluateFormalization,
 };

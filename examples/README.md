@@ -43,6 +43,7 @@ cargo build --release --manifest-path rust/Cargo.toml
 | [`markov-network.lino`](./markov-network.lino) | Cyclic Markov network with three-way cliques |
 | [`self-reasoning.lino`](./self-reasoning.lino) | Meta-logic reasoning about its own logic system |
 | [`dependent-types.lino`](./dependent-types.lino) | Dependent type system with universes, Π-types, λ |
+| [`lambda-calculus.lino`](./lambda-calculus.lino) | Lambda calculus via HOAS, with `forall` desugaring to `Pi` |
 | [`demo.lino`](./demo.lino) | Custom operator configuration (`avg`-based AND) |
 | [`flipped-axioms.lino`](./flipped-axioms.lino) | Arbitrary probability assignments |
 
