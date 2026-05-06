@@ -628,9 +628,9 @@ corecursion): at least one constructor must take a recursive `Name`
 argument. A declaration where every constructor is constant cannot
 generate any infinite value, so corecursive definitions over it can
 never make progress. The check rejects such declarations at declaration
-time with `E035` rather than letting the failure surface later.
+time with `E036` rather than letting the failure surface later.
 
-Diagnostic codes (E035) cover declarations with: a missing or
+Diagnostic codes (E036) cover declarations with: a missing or
 lowercase type name, an empty constructor list, a malformed constructor
 clause, a duplicate constructor name, a `Pi` whose return type is not
 the coinductive type itself, or a non-productive set of constructors.
