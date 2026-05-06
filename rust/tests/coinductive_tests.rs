@@ -48,7 +48,7 @@ fn records_type_constructors_and_corecursor_on_env() {
 fn rejects_coinductive_with_no_constructors() {
     let out = evaluate("(coinductive Empty)", None, None);
     assert_eq!(out.diagnostics.len(), 1);
-    assert_eq!(out.diagnostics[0].code, "E035");
+    assert_eq!(out.diagnostics[0].code, "E036");
     assert!(
         out.diagnostics[0].message.contains("at least one constructor"),
         "msg was: {}",
@@ -60,7 +60,7 @@ fn rejects_coinductive_with_no_constructors() {
 fn rejects_malformed_coinductive_constructor_clause() {
     let out = evaluate("(coinductive Bad (cons))", None, None);
     assert_eq!(out.diagnostics.len(), 1);
-    assert_eq!(out.diagnostics[0].code, "E035");
+    assert_eq!(out.diagnostics[0].code, "E036");
     assert!(
         out.diagnostics[0].message.contains("(constructor <name>)"),
         "msg was: {}",
@@ -79,7 +79,7 @@ fn rejects_coinductive_constructor_declared_twice() {
         None,
     );
     assert_eq!(out.diagnostics.len(), 1);
-    assert_eq!(out.diagnostics[0].code, "E035");
+    assert_eq!(out.diagnostics[0].code, "E036");
     assert!(
         out.diagnostics[0].message.contains("declared more than once"),
         "msg was: {}",
@@ -97,7 +97,7 @@ fn rejects_coinductive_constructor_with_wrong_return_type() {
         None,
     );
     assert_eq!(out.diagnostics.len(), 1);
-    assert_eq!(out.diagnostics[0].code, "E035");
+    assert_eq!(out.diagnostics[0].code, "E036");
     assert!(
         out.diagnostics[0].message.contains("must return \"Stream\""),
         "msg was: {}",
@@ -113,7 +113,7 @@ fn rejects_lowercase_coinductive_type_name() {
         None,
     );
     assert_eq!(out.diagnostics.len(), 1);
-    assert_eq!(out.diagnostics[0].code, "E035");
+    assert_eq!(out.diagnostics[0].code, "E036");
     assert!(
         out.diagnostics[0].message.contains("uppercase letter"),
         "msg was: {}",
@@ -134,7 +134,7 @@ fn rejects_non_productive_declaration() {
         None,
     );
     assert_eq!(out.diagnostics.len(), 1);
-    assert_eq!(out.diagnostics[0].code, "E035");
+    assert_eq!(out.diagnostics[0].code, "E036");
     assert!(
         out.diagnostics[0].message.contains("non-productive"),
         "msg was: {}",

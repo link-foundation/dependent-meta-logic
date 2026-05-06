@@ -50,14 +50,14 @@ describe('(coinductive ...) parser form', () => {
   it('rejects a coinductive declaration with no constructors', () => {
     const out = evaluate('(coinductive Empty)');
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E035');
+    assert.strictEqual(out.diagnostics[0].code, 'E036');
     assert.match(out.diagnostics[0].message, /at least one constructor/);
   });
 
   it('rejects a malformed constructor clause', () => {
     const out = evaluate('(coinductive Bad (cons))');
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E035');
+    assert.strictEqual(out.diagnostics[0].code, 'E036');
     assert.match(out.diagnostics[0].message, /\(constructor <name>\)/);
   });
 
@@ -69,7 +69,7 @@ describe('(coinductive ...) parser form', () => {
       '  (constructor (cons (Pi (Natural head) (Pi (Stream tail) Stream)))))',
     );
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E035');
+    assert.strictEqual(out.diagnostics[0].code, 'E036');
     assert.match(out.diagnostics[0].message, /declared more than once/);
   });
 
@@ -80,14 +80,14 @@ describe('(coinductive ...) parser form', () => {
       '  (constructor (cons (Pi (Natural head) (Pi (Stream tail) Boolean)))))',
     );
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E035');
+    assert.strictEqual(out.diagnostics[0].code, 'E036');
     assert.match(out.diagnostics[0].message, /must return "Stream"/);
   });
 
   it('rejects a type name that does not start with an uppercase letter', () => {
     const out = evaluate('(coinductive stream (constructor (cons (Pi (stream tail) stream))))');
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E035');
+    assert.strictEqual(out.diagnostics[0].code, 'E036');
     assert.match(out.diagnostics[0].message, /uppercase letter/);
   });
 });
@@ -101,7 +101,7 @@ describe('productivity check (guarded corecursion)', () => {
       '  (constructor (mid (Pi (Natural n) Bad))))',
     );
     assert.strictEqual(out.diagnostics.length, 1);
-    assert.strictEqual(out.diagnostics[0].code, 'E035');
+    assert.strictEqual(out.diagnostics[0].code, 'E036');
     assert.match(out.diagnostics[0].message, /non-productive/);
   });
 
