@@ -224,6 +224,25 @@ class Env {
     // eliminator into the standard term/type/lambda maps so existing kernel
     // forms (`type of`, `of`, `apply`) work without further plumbing.
     this.inductives = new Map();                // name -> { name, constructors, elimName, elimType }
+    // Definition declarations (issue #49, D13): `(define <name> [(measure ...)] (case <pat> <body>) ...)`
+    // records a recursive definition with case-clause-based pattern matching.
+    // The termination checker (`isTerminating`) reads each entry to verify
+    // that recursive calls structurally decrease either the implicit
+    // first-argument structural order or, when supplied, an explicit
+    // lexicographic measure.
+    this.definitions = new Map();               // name -> { name, measure, clauses }
+    // Coinductive declarations (issue #53, D11): `(coinductive Name (constructor ...) ...)`
+    // records a first-class coinductive datatype dual to the inductive form.
+    // Each entry stores the type name, the ordered list of constructors, and
+    // the name and Pi-type of the generated corecursor (`Name-corec`). The
+    // declaration also installs the type, every constructor, and the
+    // corecursor into the standard term/type maps so existing kernel forms
+    // (`type of`, `of`, `apply`) work without further plumbing. The kernel
+    // additionally enforces a syntactic productivity check: at least one
+    // constructor must take a recursive argument so non-productive types
+    // (which cannot generate any infinite values) are rejected at declaration
+    // time.
+    this.coinductives = new Map();              // name -> { name, constructors, corecName, corecType }
     // Namespace state (issue #34): a file can declare `(namespace foo)`, which
     // prefixes every name it subsequently introduces with `foo.`. Imports can
     // be aliased via `(import "x.lino" as a)`, which records `a` -> the
@@ -519,7 +538,8 @@ const NON_VARIABLE_TOKENS = new Set([
   'lambda', 'Pi', 'fresh', 'in', 'subst', 'apply', 'type', 'of',
   'has', 'probability', 'with', 'proof', 'range', 'valence',
   'namespace', 'import', 'as', 'is', '?', 'mode', 'relation', 'total', 'coverage', 'world',
-  'inductive', 'constructor',
+  'inductive', 'coinductive', 'constructor',
+  'define', 'case', 'measure', 'lex', 'terminating',
   '+', '-', '*', '/', '=', '!=', 'and', 'or', 'not', 'both', 'neither', 'nor',
 ]);
 
@@ -1346,12 +1366,186 @@ function isTotal(env, relName) {
   return { ok: diagnostics.length === 0, diagnostics };
 }
 
+// ---------- Definitions & termination checking (issue #49, D13) ----------
+// `(define <name> [(measure (lex <slot>...))] (case <pat-args> <body>) ...)`
+// records a recursive definition keyed by `<name>`. Each `case` clause holds
+// the pattern argument list (the head's arguments at this clause) and a body
+// expression that may reference `<name>` recursively.
+//
+// `isTerminating(env, name)` returns `{ ok, diagnostics }`. The default
+// (measure-less) check requires every recursive call to structurally
+// decrease the first argument relative to the matching clause's first
+// pattern. The explicit `(measure (lex k1 k2 ...))` form switches to a
+// lexicographic measure: a recursive call is accepted when there is some
+// position k where slots before k are structurally identical to the head's
+// and slot k is a strict subterm. Slots are 1-based argument indices.
+function parseDefineForm(node) {
+  if (!Array.isArray(node) || node[0] !== 'define') return null;
+  if (node.length < 2 || typeof node[1] !== 'string') {
+    throw new RmlError('E035', 'Define declaration: name must be a bare symbol');
+  }
+  const name = node[1];
+  if (node.length < 3) {
+    throw new RmlError(
+      'E035',
+      `Define declaration for "${name}" must list at least one \`(case ...)\` clause`,
+    );
+  }
+  let measure = null;
+  const clauses = [];
+  for (let i = 2; i < node.length; i++) {
+    const child = node[i];
+    if (Array.isArray(child) && child[0] === 'measure') {
+      if (measure !== null) {
+        throw new RmlError(
+          'E035',
+          `Define declaration for "${name}": only one \`(measure ...)\` clause is allowed`,
+        );
+      }
+      if (child.length !== 2 || !Array.isArray(child[1]) || child[1][0] !== 'lex' || child[1].length < 2) {
+        throw new RmlError(
+          'E035',
+          `Define declaration for "${name}": \`(measure ...)\` body must be \`(lex <slot>...)\``,
+        );
+      }
+      const slots = [];
+      for (let j = 1; j < child[1].length; j++) {
+        const tok = child[1][j];
+        if (typeof tok !== 'string' || !/^[0-9]+$/.test(tok)) {
+          throw new RmlError(
+            'E035',
+            `Define declaration for "${name}": measure slot must be a positive integer`,
+          );
+        }
+        const slot = parseInt(tok, 10);
+        if (slot < 1) {
+          throw new RmlError(
+            'E035',
+            `Define declaration for "${name}": measure slot must be a positive integer (got ${slot})`,
+          );
+        }
+        slots.push(slot - 1); // store 0-based for direct array indexing
+      }
+      measure = { kind: 'lex', slots };
+      continue;
+    }
+    if (Array.isArray(child) && child[0] === 'case') {
+      if (child.length !== 3) {
+        throw new RmlError(
+          'E035',
+          `Define declaration for "${name}": \`(case <pattern-args> <body>)\` clause must have exactly two children`,
+        );
+      }
+      const patternArgs = child[1];
+      if (!Array.isArray(patternArgs)) {
+        throw new RmlError(
+          'E035',
+          `Define declaration for "${name}": \`(case ...)\` pattern must be a parenthesised argument list`,
+        );
+      }
+      clauses.push({ pattern: patternArgs, body: child[2] });
+      continue;
+    }
+    throw new RmlError(
+      'E035',
+      `Define declaration for "${name}": unexpected clause \`${keyOf(child)}\` (expected \`(measure ...)\` or \`(case ...)\`)`,
+    );
+  }
+  if (clauses.length === 0) {
+    throw new RmlError(
+      'E035',
+      `Define declaration for "${name}" must list at least one \`(case ...)\` clause`,
+    );
+  }
+  return { name, measure, clauses };
+}
+
+// Verify a single recursive call's arguments against the matching clause's
+// pattern arguments. Returns null on success, or an object describing why
+// the call cannot be accepted as decreasing.
+function checkDefineDecrease(call, patternArgs, measure, defName) {
+  const callArgs = call.slice(1);
+  if (callArgs.length !== patternArgs.length) {
+    return {
+      reason: `recursive call \`${keyOf(call)}\` has ${callArgs.length} argument${callArgs.length === 1 ? '' : 's'}, clause pattern declares ${patternArgs.length}`,
+    };
+  }
+  if (measure && measure.kind === 'lex') {
+    for (const slot of measure.slots) {
+      if (slot >= patternArgs.length) {
+        return {
+          reason: `measure slot ${slot + 1} is out of range for ${patternArgs.length}-argument clause`,
+        };
+      }
+    }
+    // Lexicographic check: find the first slot where call < pattern; earlier
+    // slots must be structurally identical to the corresponding pattern.
+    for (const slot of measure.slots) {
+      const callArg = callArgs[slot];
+      const patArg = patternArgs[slot];
+      if (isStrictSubterm(callArg, patArg)) {
+        return null; // strict decrease at this slot — earlier slots already equal
+      }
+      if (!isStructurallySame(callArg, patArg)) {
+        // Neither equal nor strictly smaller → no further slot can rescue it.
+        return {
+          reason: `recursive call \`${keyOf(call)}\` does not lexicographically decrease the declared measure`,
+        };
+      }
+    }
+    return {
+      reason: `recursive call \`${keyOf(call)}\` does not lexicographically decrease the declared measure`,
+    };
+  }
+  // Default: structural decrease on the first argument.
+  if (patternArgs.length === 0) {
+    return {
+      reason: `definition "${defName}" has no arguments, so structural decrease is unverifiable`,
+    };
+  }
+  if (isStrictSubterm(callArgs[0], patternArgs[0])) {
+    return null;
+  }
+  return {
+    reason: `recursive call \`${keyOf(call)}\` does not structurally decrease the first argument of \`${keyOf([defName, ...patternArgs])}\``,
+  };
+}
+
+// Public-facing termination checker for `(define ...)` declarations.
+// Mirrors the shape of `isTotal`. Returns `{ ok, diagnostics }`. Each
+// diagnostic uses code `E035`.
+function isTerminating(env, defName) {
+  const diagnostics = [];
+  const decl = env.definitions.get(defName);
+  if (!decl) {
+    diagnostics.push({
+      code: 'E035',
+      message: `Termination check for "${defName}": no \`(define ${defName} ...)\` declaration found`,
+    });
+    return { ok: false, diagnostics };
+  }
+  for (let ci = 0; ci < decl.clauses.length; ci++) {
+    const clause = decl.clauses[ci];
+    const calls = collectRecursiveCalls(clause.body, defName, false);
+    for (const call of calls) {
+      const witness = checkDefineDecrease(call, clause.pattern, decl.measure, defName);
+      if (witness) {
+        diagnostics.push({
+          code: 'E035',
+          message: `Termination check for "${defName}": clause ${ci + 1} \`${keyOf(['case', clause.pattern, clause.body])}\` — ${witness.reason}`,
+        });
+      }
+    }
+  }
+  return { ok: diagnostics.length === 0, diagnostics };
+}
+
 // ---------- Coverage checking (issue #46, D14) ----------
 // `(coverage <name>)` verifies that, for every `+input` slot of relation
 // `<name>`, the union of clause patterns at that slot exhausts every
 // constructor of the slot's inductive type. Variables (lowercase names not
 // resolvable in the env) act as wildcards covering all constructors. When
-// a constructor is missing, an `E035` diagnostic is emitted with an example
+// a constructor is missing, an `E037` diagnostic is emitted with an example
 // pattern such as `(succ _)`.
 //
 // The same `isCovered(env, name)` helper is exported for programmatic use.
@@ -1418,14 +1612,14 @@ function isCovered(env, relName) {
   const flags = env.modes.get(relName);
   if (!flags) {
     diagnostics.push({
-      code: 'E035',
+      code: 'E037',
       message: `Coverage check for "${relName}": no \`(mode ${relName} ...)\` declaration found`,
     });
     return { ok: false, diagnostics };
   }
   if (!clauses || clauses.length === 0) {
     diagnostics.push({
-      code: 'E035',
+      code: 'E037',
       message: `Coverage check for "${relName}": no \`(relation ${relName} ...)\` clauses found`,
     });
     return { ok: false, diagnostics };
@@ -1447,7 +1641,7 @@ function isCovered(env, relName) {
     if (missing.length === 0) continue;
     const examples = missing.map(exampleConstructorPattern).join(', ');
     diagnostics.push({
-      code: 'E035',
+      code: 'E037',
       message: `Coverage check for "${relName}": +input slot ${i + 1} (type "${typeName}") missing case${missing.length === 1 ? '' : 's'} for constructor${missing.length === 1 ? '' : 's'} ${examples}`,
     });
   }
@@ -1766,6 +1960,193 @@ function registerInductive(env, decl) {
   return 1;
 }
 
+// ---------- Coinductive declarations (issue #53, D11) ----------
+// `(coinductive Name (constructor c1) (constructor (c2 (Pi (A x) ... Name))) ...)`
+// declares a first-class coinductive datatype encoded as link signatures plus
+// a generated corecursor `Name-corec`. The declaration mirrors `inductive`
+// but additionally enforces a syntactic *productivity* check:
+//
+//   - At least one constructor must take a recursive `Name` argument.
+//
+// The check captures the essential dual of the inductive case: an inductive
+// type with no recursive constructors is just a finite enumeration and works
+// fine; a coinductive type with no recursive constructors cannot generate
+// any infinite value, so corecursive definitions over it can never make
+// progress (i.e. they are non-productive). Declarations failing this check
+// raise `E036`.
+//
+// The generated corecursor `Name-corec` follows the standard coiteration
+// principle. For a state type `X`, each constructor case takes the seed
+// state and produces the constructor's argument list with recursive `Name`
+// positions replaced by `X` (the next-state slot):
+//
+//   Name-corec : (Pi (X (Type 0))
+//                 (Pi (case_c1 (Pi (X _state) <c1 sig with Name → X in args, Name in result>))
+//                   ...
+//                   (Pi (case_cN ...)
+//                     (Pi (_seed X) Name))))
+//
+// For a constant constructor (no parameters) the case degenerates to
+// `(Pi (X _state) Name)`. The corecursor type participates in the
+// bidirectional checker just like any other typed term.
+
+// Walk a constructor's parameter list and return the indices whose declared
+// type is exactly the inductive type name (the recursive positions). Used
+// both by the productivity check and by corecursor-type generation.
+function _recursiveParamIndices(ctor, typeName) {
+  const indices = [];
+  for (let i = 0; i < ctor.params.length; i++) {
+    const p = ctor.params[i];
+    if (typeof p.type === 'string' && p.type === typeName) indices.push(i);
+  }
+  return indices;
+}
+
+// Build the case (step) type for one constructor under the corecursor's
+// state variable `X`. For `c : (Pi (A1 x1) ... (Pi (Ak xk) Name))` the case
+// type is:
+//
+//   (Pi (X _state) (Pi (A1' x1) ... (Pi (Ak' xk) Name)))
+//
+// where each `Ai' = X` if the original `Ai = Name` (recursive position) and
+// otherwise `Ai' = Ai`. A constant constructor degenerates to
+// `(Pi (X _state) Name)`.
+function _buildCorecCaseType(ctor, typeName, stateVar) {
+  const dualParams = ctor.params.map(p => ({
+    name: p.name,
+    type: (typeof p.type === 'string' && p.type === typeName) ? stateVar : p.type,
+  }));
+  const inner = _buildPi(dualParams, typeName);
+  return _buildPi([{ name: '_state', type: stateVar }], inner);
+}
+
+// Compose the dependent corecursor type for `Name-corec`, given the parsed
+// coinductive declaration. The state parameter binds the symbol `_state`
+// throughout, and each constructor case parameter binds `case_<ctorName>`.
+function buildCorecursorType(decl) {
+  const stateVar = '_state_type';
+  const stateType = ['Type', '0'];
+  const caseParams = decl.constructors.map(c => ({
+    name: `case_${c.name}`,
+    type: _buildCorecCaseType(c, decl.name, stateVar),
+  }));
+  const seedVar = '_seed';
+  const final = decl.name;
+  const inner = _buildPi([{ name: seedVar, type: stateVar }], final);
+  const withCases = _buildPi(caseParams, inner);
+  return _buildPi([{ name: stateVar, type: stateType }], withCases);
+}
+
+function parseCoinductiveForm(node) {
+  if (!Array.isArray(node) || node[0] !== 'coinductive') return null;
+  if (node.length < 2 || typeof node[1] !== 'string') {
+    throw new RmlError('E036', 'Coinductive declaration: type name must be a bare symbol');
+  }
+  const name = node[1];
+  if (!/^[A-Z]/.test(name)) {
+    throw new RmlError(
+      'E036',
+      `Coinductive declaration for "${name}": type name must start with an uppercase letter`,
+    );
+  }
+  if (node.length < 3) {
+    throw new RmlError(
+      'E036',
+      `Coinductive declaration for "${name}" must list at least one constructor`,
+    );
+  }
+  const constructors = [];
+  const seen = new Set();
+  for (let i = 2; i < node.length; i++) {
+    const ctor = parseConstructorClauseCo(node[i], name);
+    if (seen.has(ctor.name)) {
+      throw new RmlError(
+        'E036',
+        `Coinductive declaration for "${name}": constructor "${ctor.name}" is declared more than once`,
+      );
+    }
+    seen.add(ctor.name);
+    constructors.push(ctor);
+  }
+  // Productivity check (guarded corecursion): at least one constructor must
+  // take a recursive `Name` argument so the type can generate progress.
+  const anyRecursive = constructors.some(c => _recursiveParamIndices(c, name).length > 0);
+  if (!anyRecursive) {
+    throw new RmlError(
+      'E036',
+      `Coinductive declaration for "${name}" is non-productive: at least one constructor must take a recursive "${name}" argument`,
+    );
+  }
+  return { name, constructors };
+}
+
+// Parse a single (constructor ...) clause for a coinductive declaration.
+// Identical shape rules as the inductive form, but errors are reported with
+// E036 so coinductive-specific failures stay distinguishable from E033.
+function parseConstructorClauseCo(clause, typeName) {
+  if (!Array.isArray(clause) || clause[0] !== 'constructor' || clause.length !== 2) {
+    throw new RmlError(
+      'E036',
+      `Coinductive declaration for "${typeName}": each clause must be \`(constructor <name>)\` or \`(constructor (<name> <pi-type>))\``,
+    );
+  }
+  const body = clause[1];
+  if (typeof body === 'string') {
+    return { name: body, params: [], type: typeName };
+  }
+  if (Array.isArray(body) && body.length === 2 && typeof body[0] === 'string' && _isPiSig(body[1])) {
+    const flat = _flattenPi(body[1]);
+    if (!flat) {
+      throw new RmlError(
+        'E036',
+        `Coinductive declaration for "${typeName}": constructor "${body[0]}" has malformed Pi-type \`${keyOf(body[1])}\``,
+      );
+    }
+    if (typeof flat.result !== 'string' || flat.result !== typeName) {
+      throw new RmlError(
+        'E036',
+        `Coinductive declaration for "${typeName}": constructor "${body[0]}" must return "${typeName}" (got "${typeof flat.result === 'string' ? flat.result : keyOf(flat.result)}")`,
+      );
+    }
+    return { name: body[0], params: flat.params, type: body[1] };
+  }
+  throw new RmlError(
+    'E036',
+    `Coinductive declaration for "${typeName}": malformed constructor clause \`${keyOf(clause)}\``,
+  );
+}
+
+// Record a coinductive declaration on the environment: install the type,
+// all constructors, the corecursor name, and the corecursor's Pi-type.
+function registerCoinductive(env, decl) {
+  const storeType = env.qualifyName(decl.name);
+  env.terms.add(storeType);
+  env.setType(storeType, ['Type', '0']);
+  evalNode(['Type', '0'], env);
+
+  for (const ctor of decl.constructors) {
+    const storeName = env.qualifyName(ctor.name);
+    env.terms.add(storeName);
+    env.setType(storeName, ctor.type);
+    if (Array.isArray(ctor.type)) evalNode(ctor.type, env);
+  }
+
+  const corecName = `${decl.name}-corec`;
+  const corecType = buildCorecursorType(decl);
+  const storeCorec = env.qualifyName(corecName);
+  env.terms.add(storeCorec);
+  env.setType(storeCorec, corecType);
+  evalNode(corecType, env);
+
+  env.coinductives.set(decl.name, {
+    name: decl.name,
+    constructors: decl.constructors,
+    corecName,
+    corecType,
+  });
+  return 1;
+}
+
 // Check a call site `(name args...)` against any registered mode declaration
 // for `name`. Returns the offending RmlError on mismatch, or `null` when the
 // call is consistent (or no declaration exists).
@@ -1899,6 +2280,19 @@ function evalNode(node, env){
     }
   }
 
+  // Coinductive declaration (issue #53, D11): (coinductive Name (constructor ...) ...)
+  // Records the coinductive datatype, installs every constructor, and
+  // generates the corecursor `Name-corec` with a dependent Pi-type. The
+  // declaration also enforces a syntactic productivity check (at least one
+  // constructor must take a recursive argument). `parseCoinductiveForm`
+  // throws E036 on a malformed or non-productive declaration.
+  if (node[0] === 'coinductive') {
+    const decl = parseCoinductiveForm(node);
+    if (decl) {
+      return registerCoinductive(env, decl);
+    }
+  }
+
   // Totality check (issue #44, D12): (total <name>) runs `isTotal` over
   // the recorded relation and turns each returned diagnostic into an
   // E032 RmlError. The first error short-circuits, mirroring how the
@@ -1915,6 +2309,33 @@ function evalNode(node, env){
     throw new RmlError('E032', 'Totality declaration must be `(total <relation-name>)`');
   }
 
+  // Definition declaration (issue #49, D13): (define <name> [(measure ...)] (case ...) ...)
+  // Records the definition on `env.definitions` so termination can be
+  // queried later via `isTerminating` or via the `(terminating <name>)`
+  // driver form. Malformed declarations raise E035 from the parser.
+  if (node[0] === 'define') {
+    const decl = parseDefineForm(node);
+    if (decl) {
+      env.definitions.set(decl.name, decl);
+      return 1;
+    }
+  }
+
+  // Termination check (issue #49, D13): (terminating <name>) runs
+  // `isTerminating` and surfaces the first diagnostic via the existing
+  // diagnostic pipeline.
+  if (node[0] === 'terminating' && node.length === 2 && typeof node[1] === 'string') {
+    const result = isTerminating(env, node[1]);
+    if (!result.ok && result.diagnostics.length > 0) {
+      const first = result.diagnostics[0];
+      throw new RmlError(first.code || 'E035', first.message);
+    }
+    return 1;
+  }
+  if (node[0] === 'terminating') {
+    throw new RmlError('E035', 'Termination declaration must be `(terminating <definition-name>)`');
+  }
+
   // Coverage check (issue #46, D14): (coverage <name>) runs `isCovered`
   // and surfaces every returned diagnostic. The first becomes the thrown
   // RmlError so the surrounding form gets a diagnostic span; any extras
@@ -1927,18 +2348,18 @@ function evalNode(node, env){
       if (rest.length > 0 && Array.isArray(env._shadowDiagnostics)) {
         for (const d of rest) {
           env._shadowDiagnostics.push(new Diagnostic({
-            code: d.code || 'E035',
+            code: d.code || 'E037',
             message: d.message,
             span: env._currentSpan || null,
           }));
         }
       }
-      throw new RmlError(first.code || 'E035', first.message);
+      throw new RmlError(first.code || 'E037', first.message);
     }
     return 1;
   }
   if (node[0] === 'coverage') {
-    throw new RmlError('E035', 'Coverage declaration must be `(coverage <relation-name>)`');
+    throw new RmlError('E037', 'Coverage declaration must be `(coverage <relation-name>)`');
   }
 
   // Mode-mismatch check (issue #43, D15): a call `(name args...)` whose
@@ -3550,9 +3971,13 @@ export {
   synth,
   check,
   isTotal,
+  isTerminating,
+  parseDefineForm,
   isCovered,
   parseInductiveForm,
   buildEliminatorType,
+  parseCoinductiveForm,
+  buildCorecursorType,
   formalizeSelectedInterpretation,
   evaluateFormalization,
 };

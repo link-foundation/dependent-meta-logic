@@ -746,6 +746,21 @@ pub struct Env {
     /// datatype encoded as link signatures plus a generated eliminator.
     /// Stored by type name; see [`InductiveDecl`] for the full layout.
     pub inductives: HashMap<String, InductiveDecl>,
+    /// Recursive definition declarations (issue #49, D13): each
+    /// `(define <name> [(measure ...)] (case ...) ...)` form is recorded
+    /// here so the termination checker (`is_terminating`) can verify
+    /// structural decrease across recursive calls. Stored by definition
+    /// name; see [`DefineDecl`] for the full layout.
+    pub definitions: HashMap<String, DefineDecl>,
+    /// Coinductive declarations (issue #53, D11): a first-class coinductive
+    /// datatype dual to the inductive form, encoded as link signatures plus
+    /// a generated corecursor `Name-corec`. Each entry stores the type name,
+    /// the ordered constructors, and the name and Pi-type of the
+    /// corecursor. The kernel additionally enforces a syntactic productivity
+    /// check at declaration time: at least one constructor must take a
+    /// recursive argument so non-productive types (which cannot generate
+    /// any infinite values) are rejected up front.
+    pub coinductives: HashMap<String, CoinductiveDecl>,
 }
 
 /// One constructor of an inductive datatype.
@@ -772,6 +787,53 @@ pub struct InductiveDecl {
     pub elim_name: String,
     /// Generated eliminator's dependent Pi-type.
     pub elim_type: Node,
+}
+
+/// One `(case <pattern-args> <body>)` clause of a `(define …)` declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefineClause {
+    /// The clause's pattern arguments — the children of the parenthesised
+    /// pattern list, in left-to-right order.
+    pub pattern: Vec<Node>,
+    /// The clause body, which may contain recursive references to the
+    /// declared name.
+    pub body: Node,
+}
+
+/// Optional measure attached to a `(define …)` declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefineMeasure {
+    /// Lexicographic measure: the listed argument indices (0-based) must
+    /// strictly decrease in the standard left-to-right lexicographic order
+    /// on every recursive call.
+    Lex(Vec<usize>),
+}
+
+/// A parsed `(define <name> [(measure …)] (case …) …)` declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefineDecl {
+    /// Definition name.
+    pub name: String,
+    /// Optional explicit measure. When `None`, the termination checker
+    /// uses the default rule: structural decrease on the first argument.
+    pub measure: Option<DefineMeasure>,
+    /// Ordered list of `(case …)` clauses.
+    pub clauses: Vec<DefineClause>,
+}
+
+/// A parsed `(coinductive Name (constructor …) …)` declaration. Mirrors
+/// [`InductiveDecl`] but additionally guarantees the productivity check
+/// (at least one recursive constructor) has succeeded.
+#[derive(Debug, Clone)]
+pub struct CoinductiveDecl {
+    /// Coinductive type name (must start with an uppercase letter).
+    pub name: String,
+    /// Ordered list of declared constructors.
+    pub constructors: Vec<ConstructorDecl>,
+    /// Generated corecursor name (`Name-corec`).
+    pub corec_name: String,
+    /// Generated corecursor's dependent Pi-type.
+    pub corec_type: Node,
 }
 
 /// Per-argument mode flag for a relation declared via `(mode …)`.
@@ -839,6 +901,8 @@ impl Env {
             relations: HashMap::new(),
             worlds: HashMap::new(),
             inductives: HashMap::new(),
+            definitions: HashMap::new(),
+            coinductives: HashMap::new(),
         };
 
         // Initialize truth constants: true, false, unknown, undefined
@@ -1283,7 +1347,13 @@ fn non_variable_token(s: &str) -> bool {
             | "coverage"
             | "world"
             | "inductive"
+            | "coinductive"
             | "constructor"
+            | "define"
+            | "case"
+            | "measure"
+            | "lex"
+            | "terminating"
             | "+"
             | "-"
             | "*"
@@ -3217,13 +3287,275 @@ pub fn is_total(env: &Env, rel_name: &str) -> TotalityResult {
     }
 }
 
+// ---------- Definitions & termination checking (issue #49, D13) ----------
+// `(define <name> [(measure (lex <slot>...))] (case <pattern-args> <body>) ...)`
+// records a recursive definition keyed by `<name>`. `is_terminating(env, name)`
+// then verifies that every recursive call structurally decreases either the
+// first argument (default) or the explicit lexicographic measure. Mirrors
+// the JS export `isTerminating` and uses error code E035.
+
+/// Per-clause / per-call termination diagnostic returned by [`is_terminating`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminationDiagnostic {
+    pub code: String,
+    pub message: String,
+}
+
+/// Outcome of a termination check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminationResult {
+    pub ok: bool,
+    pub diagnostics: Vec<TerminationDiagnostic>,
+}
+
+fn parse_define_form(children: &[Node]) -> DefineDecl {
+    // Caller already verified `children[0]` is the leaf `define`.
+    if children.len() < 2 {
+        panic!("Termination check error: Define declaration: name must be a bare symbol");
+    }
+    let name = match &children[1] {
+        Node::Leaf(s) => s.clone(),
+        _ => panic!("Termination check error: Define declaration: name must be a bare symbol"),
+    };
+    if children.len() < 3 {
+        panic!(
+            "Termination check error: Define declaration for \"{}\" must list at least one `(case ...)` clause",
+            name
+        );
+    }
+    let mut measure: Option<DefineMeasure> = None;
+    let mut clauses: Vec<DefineClause> = Vec::new();
+    for child in &children[2..] {
+        match child {
+            Node::List(items) if !items.is_empty() => match &items[0] {
+                Node::Leaf(head) if head == "measure" => {
+                    if measure.is_some() {
+                        panic!(
+                            "Termination check error: Define declaration for \"{}\": only one `(measure ...)` clause is allowed",
+                            name
+                        );
+                    }
+                    if items.len() != 2 {
+                        panic!(
+                            "Termination check error: Define declaration for \"{}\": `(measure ...)` body must be `(lex <slot>...)`",
+                            name
+                        );
+                    }
+                    let body = &items[1];
+                    let lex_items = match body {
+                        Node::List(b) if b.len() >= 2 => match &b[0] {
+                            Node::Leaf(h) if h == "lex" => &b[1..],
+                            _ => panic!(
+                                "Termination check error: Define declaration for \"{}\": `(measure ...)` body must be `(lex <slot>...)`",
+                                name
+                            ),
+                        },
+                        _ => panic!(
+                            "Termination check error: Define declaration for \"{}\": `(measure ...)` body must be `(lex <slot>...)`",
+                            name
+                        ),
+                    };
+                    let mut slots: Vec<usize> = Vec::with_capacity(lex_items.len());
+                    for item in lex_items {
+                        let raw = match item {
+                            Node::Leaf(s) => s.clone(),
+                            _ => panic!(
+                                "Termination check error: Define declaration for \"{}\": measure slot must be a positive integer",
+                                name
+                            ),
+                        };
+                        let parsed: Result<usize, _> = raw.parse();
+                        match parsed {
+                            Ok(n) if n >= 1 => slots.push(n - 1),
+                            _ => panic!(
+                                "Termination check error: Define declaration for \"{}\": measure slot must be a positive integer",
+                                name
+                            ),
+                        }
+                    }
+                    measure = Some(DefineMeasure::Lex(slots));
+                }
+                Node::Leaf(head) if head == "case" => {
+                    if items.len() != 3 {
+                        panic!(
+                            "Termination check error: Define declaration for \"{}\": `(case <pattern-args> <body>)` clause must have exactly two children",
+                            name
+                        );
+                    }
+                    let pattern = match &items[1] {
+                        Node::List(p) => p.clone(),
+                        // The upstream `links-notation` parser collapses
+                        // single-element parens (`(zero)` → `zero`), so a
+                        // surface pattern with one argument arrives here as a
+                        // `Leaf`. Treat it as the equivalent one-element list
+                        // so `(case (zero) zero)` parses the same way it does
+                        // in the JS implementation.
+                        Node::Leaf(_) => vec![items[1].clone()],
+                    };
+                    clauses.push(DefineClause {
+                        pattern,
+                        body: items[2].clone(),
+                    });
+                }
+                _ => panic!(
+                    "Termination check error: Define declaration for \"{}\": unexpected clause `{}` (expected `(measure ...)` or `(case ...)`)",
+                    name,
+                    key_of(child)
+                ),
+            },
+            _ => panic!(
+                "Termination check error: Define declaration for \"{}\": unexpected clause `{}` (expected `(measure ...)` or `(case ...)`)",
+                name,
+                key_of(child)
+            ),
+        }
+    }
+    if clauses.is_empty() {
+        panic!(
+            "Termination check error: Define declaration for \"{}\" must list at least one `(case ...)` clause",
+            name
+        );
+    }
+    DefineDecl {
+        name,
+        measure,
+        clauses,
+    }
+}
+
+fn check_define_decrease(
+    call: &Node,
+    pattern: &[Node],
+    measure: &Option<DefineMeasure>,
+    def_name: &str,
+) -> Option<String> {
+    let call_args: Vec<Node> = match call {
+        Node::List(items) if !items.is_empty() => items[1..].to_vec(),
+        _ => return Some(format!("recursive call `{}` has no arguments", key_of(call))),
+    };
+    if call_args.len() != pattern.len() {
+        return Some(format!(
+            "recursive call `{}` has {} argument{}, clause pattern declares {}",
+            key_of(call),
+            call_args.len(),
+            if call_args.len() == 1 { "" } else { "s" },
+            pattern.len(),
+        ));
+    }
+    if let Some(DefineMeasure::Lex(slots)) = measure {
+        for &slot in slots {
+            if slot >= pattern.len() {
+                return Some(format!(
+                    "measure slot {} is out of range for {}-argument clause",
+                    slot + 1,
+                    pattern.len(),
+                ));
+            }
+        }
+        for &slot in slots {
+            let call_arg = &call_args[slot];
+            let pat_arg = &pattern[slot];
+            if is_strict_subterm(call_arg, pat_arg) {
+                return None;
+            }
+            if !is_node_equal(call_arg, pat_arg) {
+                return Some(format!(
+                    "recursive call `{}` does not lexicographically decrease the declared measure",
+                    key_of(call),
+                ));
+            }
+        }
+        return Some(format!(
+            "recursive call `{}` does not lexicographically decrease the declared measure",
+            key_of(call),
+        ));
+    }
+    if pattern.is_empty() {
+        return Some(format!(
+            "definition \"{}\" has no arguments, so structural decrease is unverifiable",
+            def_name
+        ));
+    }
+    if is_strict_subterm(&call_args[0], &pattern[0]) {
+        return None;
+    }
+    let head_with_pattern = {
+        let mut items = Vec::with_capacity(pattern.len() + 1);
+        items.push(Node::Leaf(def_name.to_string()));
+        items.extend(pattern.iter().cloned());
+        Node::List(items)
+    };
+    Some(format!(
+        "recursive call `{}` does not structurally decrease the first argument of `{}`",
+        key_of(call),
+        key_of(&head_with_pattern)
+    ))
+}
+
+fn is_node_equal(a: &Node, b: &Node) -> bool {
+    a == b
+}
+
+/// Public termination checker. Returns a [`TerminationResult`] with
+/// structured diagnostics; callers can either propagate them as-is or
+/// convert each entry into a [`Diagnostic`] for the existing pipeline. The
+/// mirrored JS helper is exported under the same name (`isTerminating`).
+pub fn is_terminating(env: &Env, def_name: &str) -> TerminationResult {
+    let mut diagnostics: Vec<TerminationDiagnostic> = Vec::new();
+    let decl = match env.definitions.get(def_name) {
+        Some(d) => d.clone(),
+        None => {
+            diagnostics.push(TerminationDiagnostic {
+                code: "E035".to_string(),
+                message: format!(
+                    "Termination check for \"{}\": no `(define {} ...)` declaration found",
+                    def_name, def_name
+                ),
+            });
+            return TerminationResult {
+                ok: false,
+                diagnostics,
+            };
+        }
+    };
+    for (ci, clause) in decl.clauses.iter().enumerate() {
+        let mut calls: Vec<Node> = Vec::new();
+        collect_recursive_calls(&clause.body, def_name, false, &mut calls);
+        for call in &calls {
+            if let Some(reason) =
+                check_define_decrease(call, &clause.pattern, &decl.measure, def_name)
+            {
+                let case_node = Node::List(vec![
+                    Node::Leaf("case".to_string()),
+                    Node::List(clause.pattern.clone()),
+                    clause.body.clone(),
+                ]);
+                diagnostics.push(TerminationDiagnostic {
+                    code: "E035".to_string(),
+                    message: format!(
+                        "Termination check for \"{}\": clause {} `{}` — {}",
+                        def_name,
+                        ci + 1,
+                        key_of(&case_node),
+                        reason
+                    ),
+                });
+            }
+        }
+    }
+    TerminationResult {
+        ok: diagnostics.is_empty(),
+        diagnostics,
+    }
+}
+
 // ---------- Coverage checking (issue #46, D14) ----------
 // Mirrors the JavaScript `isCovered` helper. For every `+input` slot of the
 // named relation, the union of clause patterns at that slot must exhaust
 // every constructor of the slot's inductive type. Wildcard variables
 // (lowercase symbols not registered in the env) cover all constructors;
 // slots whose inductive type cannot be inferred are skipped. A missing
-// constructor produces an `E035` diagnostic with an example pattern.
+// constructor produces an `E037` diagnostic with an example pattern.
 
 /// Structured coverage diagnostic mirroring [`TotalityDiagnostic`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3316,7 +3648,7 @@ pub fn is_covered(env: &Env, rel_name: &str) -> CoverageResult {
         Some(f) => f.clone(),
         None => {
             diagnostics.push(CoverageDiagnostic {
-                code: "E035".to_string(),
+                code: "E037".to_string(),
                 message: format!(
                     "Coverage check for \"{}\": no `(mode {} ...)` declaration found",
                     rel_name, rel_name
@@ -3332,7 +3664,7 @@ pub fn is_covered(env: &Env, rel_name: &str) -> CoverageResult {
         Some(c) if !c.is_empty() => c.clone(),
         _ => {
             diagnostics.push(CoverageDiagnostic {
-                code: "E035".to_string(),
+                code: "E037".to_string(),
                 message: format!(
                     "Coverage check for \"{}\": no `(relation {} ...)` clauses found",
                     rel_name, rel_name
@@ -3388,7 +3720,7 @@ pub fn is_covered(env: &Env, rel_name: &str) -> CoverageResult {
             .collect();
         let plural = if missing.len() == 1 { "" } else { "s" };
         diagnostics.push(CoverageDiagnostic {
-            code: "E035".to_string(),
+            code: "E037".to_string(),
             message: format!(
                 "Coverage check for \"{}\": +input slot {} (type \"{}\") missing case{} for constructor{} {}",
                 rel_name,
@@ -3860,6 +4192,237 @@ pub fn register_inductive(env: &mut Env, decl: InductiveDecl) {
     env.inductives.insert(decl.name.clone(), decl);
 }
 
+// ---------- Coinductive declarations (issue #53, D11) ----------
+// Mirrors the JavaScript helpers in `js/src/rml-links.mjs`. The
+// `(coinductive Name (constructor …) …)` form records a coinductive
+// datatype, installs every constructor, and synthesises a corecursor
+// `Name-corec` with a dependent Pi-type following the standard
+// coiteration principle. The declaration also enforces a syntactic
+// productivity check: at least one constructor must take a recursive
+// `Name` argument (otherwise no infinite value can ever be generated).
+// Errors panic with `Coinductive declaration error:` so
+// `decode_panic_payload` maps them to E036.
+
+fn parse_coinductive_constructor_clause(clause: &Node, type_name: &str) -> ConstructorDecl {
+    let items = match clause {
+        Node::List(items) if items.len() == 2 => items,
+        _ => panic!(
+            "Coinductive declaration error: each clause must be `(constructor <name>)` or `(constructor (<name> <pi-type>))`"
+        ),
+    };
+    match &items[0] {
+        Node::Leaf(h) if h == "constructor" => {}
+        _ => panic!(
+            "Coinductive declaration error: each clause must be `(constructor <name>)` or `(constructor (<name> <pi-type>))`"
+        ),
+    }
+    match &items[1] {
+        Node::Leaf(name) => ConstructorDecl {
+            name: name.clone(),
+            params: Vec::new(),
+            typ: Node::Leaf(type_name.to_string()),
+        },
+        Node::List(inner) if inner.len() == 2 => {
+            let name = match &inner[0] {
+                Node::Leaf(s) => s.clone(),
+                _ => panic!(
+                    "Coinductive declaration error: malformed constructor clause `{}`",
+                    key_of(clause)
+                ),
+            };
+            if !is_pi_sig(&inner[1]) {
+                panic!(
+                    "Coinductive declaration error: malformed constructor clause `{}`",
+                    key_of(clause)
+                );
+            }
+            let (params, result) = match flatten_pi(&inner[1]) {
+                Some(parts) => parts,
+                None => panic!(
+                    "Coinductive declaration error: constructor \"{}\" has malformed Pi-type `{}`",
+                    name,
+                    key_of(&inner[1])
+                ),
+            };
+            match &result {
+                Node::Leaf(r) if r == type_name => {}
+                other => panic!(
+                    "Coinductive declaration error: constructor \"{}\" must return \"{}\" (got \"{}\")",
+                    name,
+                    type_name,
+                    key_of(other)
+                ),
+            }
+            ConstructorDecl {
+                name,
+                params,
+                typ: inner[1].clone(),
+            }
+        }
+        _ => panic!(
+            "Coinductive declaration error: malformed constructor clause `{}`",
+            key_of(clause)
+        ),
+    }
+}
+
+/// Walk a constructor's parameter list and return whether it has at least
+/// one recursive `type_name` argument. Used by the productivity check.
+fn ctor_has_recursive_param(ctor: &ConstructorDecl, type_name: &str) -> bool {
+    ctor.params.iter().any(|(_, ty)| {
+        if let Node::Leaf(s) = ty {
+            s == type_name
+        } else {
+            false
+        }
+    })
+}
+
+/// Parse a `(coinductive Name (constructor …) …)` form into a
+/// [`CoinductiveDecl`]. Panics with `Coinductive declaration error:` on
+/// a malformed or non-productive declaration so the existing diagnostic
+/// dispatch maps it to `E036`.
+pub fn parse_coinductive_form(node: &Node) -> Option<CoinductiveDecl> {
+    let children = match node {
+        Node::List(items) => items,
+        _ => return None,
+    };
+    if children.is_empty() {
+        return None;
+    }
+    match &children[0] {
+        Node::Leaf(h) if h == "coinductive" => {}
+        _ => return None,
+    }
+    let name = match children.get(1) {
+        Some(Node::Leaf(s)) => s.clone(),
+        _ => panic!("Coinductive declaration error: type name must be a bare symbol"),
+    };
+    if !name.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
+        panic!(
+            "Coinductive declaration error: declaration for \"{}\": type name must start with an uppercase letter",
+            name
+        );
+    }
+    if children.len() < 3 {
+        panic!(
+            "Coinductive declaration error: declaration for \"{}\" must list at least one constructor",
+            name
+        );
+    }
+    let mut constructors: Vec<ConstructorDecl> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for clause in &children[2..] {
+        let ctor = parse_coinductive_constructor_clause(clause, &name);
+        if seen.contains(&ctor.name) {
+            panic!(
+                "Coinductive declaration error: declaration for \"{}\": constructor \"{}\" is declared more than once",
+                name, ctor.name
+            );
+        }
+        seen.insert(ctor.name.clone());
+        constructors.push(ctor);
+    }
+    let any_recursive = constructors.iter().any(|c| ctor_has_recursive_param(c, &name));
+    if !any_recursive {
+        panic!(
+            "Coinductive declaration error: declaration for \"{}\" is non-productive: at least one constructor must take a recursive \"{}\" argument",
+            name, name
+        );
+    }
+    let corec_name = format!("{}-corec", name);
+    let corec_type = build_corecursor_type(&name, &constructors);
+    Some(CoinductiveDecl {
+        name,
+        constructors,
+        corec_name,
+        corec_type,
+    })
+}
+
+fn build_corec_case_type(ctor: &ConstructorDecl, type_name: &str, state_var: &str) -> Node {
+    let dual_params: Vec<(String, Node)> = ctor
+        .params
+        .iter()
+        .map(|(pname, ptype)| {
+            let new_type = match ptype {
+                Node::Leaf(s) if s == type_name => Node::Leaf(state_var.to_string()),
+                other => other.clone(),
+            };
+            (pname.clone(), new_type)
+        })
+        .collect();
+    let inner = build_pi(&dual_params, Node::Leaf(type_name.to_string()));
+    build_pi(
+        &[(
+            "_state".to_string(),
+            Node::Leaf(state_var.to_string()),
+        )],
+        inner,
+    )
+}
+
+/// Compose the dependent corecursor type for `Name-corec`, given the parsed
+/// constructor list. The state parameter binds the symbol `_state_type`
+/// throughout, and each constructor case parameter binds `case_<ctorName>`.
+pub fn build_corecursor_type(type_name: &str, constructors: &[ConstructorDecl]) -> Node {
+    let state_var = "_state_type";
+    let state_type = Node::List(vec![
+        Node::Leaf("Type".to_string()),
+        Node::Leaf("0".to_string()),
+    ]);
+    let case_params: Vec<(String, Node)> = constructors
+        .iter()
+        .map(|c| {
+            (
+                format!("case_{}", c.name),
+                build_corec_case_type(c, type_name, state_var),
+            )
+        })
+        .collect();
+    let seed_var = "_seed";
+    let final_node = Node::Leaf(type_name.to_string());
+    let inner = build_pi(
+        &[(seed_var.to_string(), Node::Leaf(state_var.to_string()))],
+        final_node,
+    );
+    let with_cases = build_pi(&case_params, inner);
+    build_pi(
+        &[(state_var.to_string(), state_type)],
+        with_cases,
+    )
+}
+
+/// Install a coinductive declaration on the environment: register the type,
+/// every constructor, and the generated corecursor together with its
+/// dependent Pi-type. Mirrors `registerCoinductive` in the JavaScript kernel.
+pub fn register_coinductive(env: &mut Env, decl: CoinductiveDecl) {
+    let store_type = env.qualify_name(&decl.name);
+    env.terms.insert(store_type.clone());
+    let type0 = Node::List(vec![
+        Node::Leaf("Type".to_string()),
+        Node::Leaf("0".to_string()),
+    ]);
+    env.set_type(&store_type, &key_of(&type0));
+    eval_node(&type0, env);
+
+    for ctor in &decl.constructors {
+        let store_name = env.qualify_name(&ctor.name);
+        env.terms.insert(store_name.clone());
+        env.set_type(&store_name, &key_of(&ctor.typ));
+        if matches!(ctor.typ, Node::List(_)) {
+            eval_node(&ctor.typ, env);
+        }
+    }
+
+    let store_corec = env.qualify_name(&decl.corec_name);
+    env.terms.insert(store_corec.clone());
+    env.set_type(&store_corec, &key_of(&decl.corec_type));
+    eval_node(&decl.corec_type, env);
+
+    env.coinductives.insert(decl.name.clone(), decl);
+}
+
 /// Evaluate an AST node in the given environment.
 pub fn eval_node(node: &Node, env: &mut Env) -> EvalResult {
     // HOAS desugaring (issue #51, D7): rewrite `(forall (A x) body)` to
@@ -3946,6 +4509,43 @@ pub fn eval_node(node: &Node, env: &mut Env) -> EvalResult {
                 }
             }
 
+            // Definition declaration (issue #49, D13):
+            //   (define <name> [(measure (lex <slot>...))] (case <pat> <body>) ...)
+            // Records the recursive definition on the env so termination can
+            // be queried later. `parse_define_form` panics with
+            // `Termination check error:` on a malformed declaration so
+            // `decode_panic_payload` surfaces it as E035.
+            if let Node::Leaf(ref head) = children[0] {
+                if head == "define" {
+                    let decl = parse_define_form(children);
+                    env.definitions.insert(decl.name.clone(), decl);
+                    return EvalResult::Value(1.0);
+                }
+            }
+
+            // Termination declaration (issue #49, D13): (terminating <name>)
+            // runs `is_terminating` and surfaces the first diagnostic via
+            // the existing panic-based dispatch (`Termination check error:`
+            // -> E035).
+            if let Node::Leaf(ref head) = children[0] {
+                if head == "terminating" {
+                    if children.len() == 2 {
+                        if let Node::Leaf(ref def_name) = children[1] {
+                            let result = is_terminating(env, def_name);
+                            if !result.ok {
+                                if let Some(first) = result.diagnostics.first() {
+                                    panic!("Termination check error: {}", first.message);
+                                }
+                            }
+                            return EvalResult::Value(1.0);
+                        }
+                    }
+                    panic!(
+                        "Termination check error: Termination declaration must be `(terminating <definition-name>)`"
+                    );
+                }
+            }
+
             // Coverage declaration (issue #46, D14): (coverage <name>) runs
             // `is_covered`. The first diagnostic becomes the panic so the
             // surrounding form gets a span; any extras land in
@@ -4008,6 +4608,26 @@ pub fn eval_node(node: &Node, env: &mut Env) -> EvalResult {
                 if head == "inductive" {
                     if let Some(decl) = parse_inductive_form(node) {
                         register_inductive(env, decl);
+                        return EvalResult::Value(1.0);
+                    }
+                }
+            }
+
+            // Coinductive declaration (issue #53, D11):
+            //   (coinductive Name (constructor c1) (constructor (c2 (Pi ...))) ...)
+            // Stores the type, every constructor, and a generated
+            // `Name-corec` corecursor on the env. The form additionally
+            // enforces a syntactic productivity check: at least one
+            // constructor must take a recursive argument so non-productive
+            // types (which cannot generate any infinite values) are
+            // rejected up front. `parse_coinductive_form` panics with
+            // `Coinductive declaration error:` on a malformed or
+            // non-productive declaration, which `decode_panic_payload`
+            // maps to E035.
+            if let Node::Leaf(ref head) = children[0] {
+                if head == "coinductive" {
+                    if let Some(decl) = parse_coinductive_form(node) {
+                        register_coinductive(env, decl);
                         return EvalResult::Value(1.0);
                     }
                 }
@@ -5621,7 +6241,7 @@ fn decode_panic_payload(payload: &Box<dyn std::any::Any + Send>) -> (String, Str
         )
     } else if raw_msg.starts_with("Coverage check error:") {
         (
-            "E035".to_string(),
+            "E037".to_string(),
             raw_msg.replacen("Coverage check error: ", "", 1),
         )
     } else if raw_msg.starts_with("World declaration error:") {
@@ -5638,6 +6258,16 @@ fn decode_panic_payload(payload: &Box<dyn std::any::Any + Send>) -> (String, Str
         (
             "E033".to_string(),
             raw_msg.replacen("Inductive declaration error: ", "", 1),
+        )
+    } else if raw_msg.starts_with("Termination check error:") {
+        (
+            "E035".to_string(),
+            raw_msg.replacen("Termination check error: ", "", 1),
+        )
+    } else if raw_msg.starts_with("Coinductive declaration error:") {
+        (
+            "E036".to_string(),
+            raw_msg.replacen("Coinductive declaration error: ", "", 1),
         )
     } else {
         ("E000".to_string(), raw_msg)

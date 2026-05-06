@@ -52,7 +52,7 @@ describe('(coverage ...) detects missing constructor cases', () => {
       '  (f zero zero))\n' +
       '(coverage f)',
     );
-    const e035 = out.diagnostics.filter(d => d.code === 'E035');
+    const e035 = out.diagnostics.filter(d => d.code === 'E037');
     assert.strictEqual(e035.length, 1);
     assert.match(e035[0].message, /missing case/);
     assert.match(e035[0].message, /\(succ/);
@@ -68,7 +68,7 @@ describe('(coverage ...) detects missing constructor cases', () => {
       '  (g (succ n) zero))\n' +
       '(coverage g)',
     );
-    const e035 = out.diagnostics.filter(d => d.code === 'E035');
+    const e035 = out.diagnostics.filter(d => d.code === 'E037');
     assert.strictEqual(e035.length, 1);
     assert.match(e035[0].message, /missing case/);
     assert.match(e035[0].message, /zero/);
@@ -85,7 +85,7 @@ describe('(coverage ...) detects missing constructor cases', () => {
       '  (head (cons x xs) x))\n' +
       '(coverage head)',
     );
-    const e035 = out.diagnostics.filter(d => d.code === 'E035');
+    const e035 = out.diagnostics.filter(d => d.code === 'E037');
     assert.strictEqual(e035.length, 1);
     assert.match(e035[0].message, /missing case/);
     assert.match(e035[0].message, /nil/);
@@ -101,7 +101,7 @@ describe('(coverage ...) detects missing constructor cases', () => {
       '  (add zero zero zero))\n' +
       '(coverage add)',
     );
-    const e035 = out.diagnostics.filter(d => d.code === 'E035');
+    const e035 = out.diagnostics.filter(d => d.code === 'E037');
     assert.strictEqual(e035.length, 2);
   });
 
@@ -113,7 +113,7 @@ describe('(coverage ...) detects missing constructor cases', () => {
       '(relation f (f zero zero))\n' +
       '(coverage f)',
     );
-    const e035 = out.diagnostics.filter(d => d.code === 'E035');
+    const e035 = out.diagnostics.filter(d => d.code === 'E037');
     assert.strictEqual(e035.length, 1);
     assert.match(e035[0].message, /no `\(mode f \.\.\.\)` declaration/);
   });
@@ -122,14 +122,14 @@ describe('(coverage ...) detects missing constructor cases', () => {
     const out = evaluate(
       '(mode f +input -output)\n(coverage f)',
     );
-    const e035 = out.diagnostics.filter(d => d.code === 'E035');
+    const e035 = out.diagnostics.filter(d => d.code === 'E037');
     assert.strictEqual(e035.length, 1);
     assert.match(e035[0].message, /no `\(relation f \.\.\.\)` clauses/);
   });
 
   it('rejects a malformed `(coverage ...)`', () => {
     const out = evaluate('(coverage f extra)');
-    const e035 = out.diagnostics.filter(d => d.code === 'E035');
+    const e035 = out.diagnostics.filter(d => d.code === 'E037');
     assert.strictEqual(e035.length, 1);
     assert.match(e035[0].message, /must be `\(coverage <relation-name>\)`/);
   });
@@ -167,7 +167,7 @@ describe('isCovered API surface', () => {
     const result = isCovered(env, 'f');
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.diagnostics.length, 1);
-    assert.strictEqual(result.diagnostics[0].code, 'E035');
+    assert.strictEqual(result.diagnostics[0].code, 'E037');
     assert.match(result.diagnostics[0].message, /\(succ/);
   });
 

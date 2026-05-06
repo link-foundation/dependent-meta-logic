@@ -59,7 +59,7 @@ fn coverage_rejects_omitted_succ_case() {
     let e035: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E035")
+        .filter(|d| d.code == "E037")
         .collect();
     assert_eq!(e035.len(), 1);
     assert!(
@@ -89,9 +89,9 @@ fn coverage_rejects_omitted_zero_case() {
     let e035: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E035")
+        .filter(|d| d.code == "E037")
         .collect();
-    assert!(!e035.is_empty(), "expected an E035 diagnostic, got: {:?}", out.diagnostics);
+    assert!(!e035.is_empty(), "expected an E037 diagnostic, got: {:?}", out.diagnostics);
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn coverage_rejects_omitted_list_constructor() {
     let e035: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E035")
+        .filter(|d| d.code == "E037")
         .collect();
     assert_eq!(e035.len(), 1);
     assert!(
@@ -135,7 +135,7 @@ fn coverage_reports_each_input_slot_independently() {
     let e035: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E035")
+        .filter(|d| d.code == "E037")
         .collect();
     assert_eq!(e035.len(), 2);
 }
@@ -154,7 +154,7 @@ fn coverage_for_relation_without_mode_is_e035() {
     let e035: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E035")
+        .filter(|d| d.code == "E037")
         .collect();
     assert_eq!(e035.len(), 1);
     assert!(
@@ -170,7 +170,7 @@ fn coverage_with_mode_but_no_clauses_is_e035() {
     let e035: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E035")
+        .filter(|d| d.code == "E037")
         .collect();
     assert_eq!(e035.len(), 1);
     assert!(
@@ -186,7 +186,7 @@ fn malformed_coverage_form_is_e035() {
     let e035: Vec<_> = out
         .diagnostics
         .iter()
-        .filter(|d| d.code == "E035")
+        .filter(|d| d.code == "E037")
         .collect();
     assert_eq!(e035.len(), 1);
     assert!(
@@ -230,7 +230,7 @@ fn is_covered_api_returns_diagnostics_when_missing() {
     let result = is_covered(&env, "f");
     assert!(!result.ok);
     assert_eq!(result.diagnostics.len(), 1);
-    assert_eq!(result.diagnostics[0].code, "E035");
+    assert_eq!(result.diagnostics[0].code, "E037");
 }
 
 #[test]
