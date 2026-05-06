@@ -540,6 +540,7 @@ const NON_VARIABLE_TOKENS = new Set([
   'namespace', 'import', 'as', 'is', '?', 'mode', 'relation', 'total', 'coverage', 'world',
   'inductive', 'coinductive', 'constructor',
   'define', 'case', 'measure', 'lex', 'terminating',
+  'whnf', 'nf', 'normal-form',
   '+', '-', '*', '/', '=', '!=', 'and', 'or', 'not', 'both', 'neither', 'nor',
 ]);
 
@@ -870,6 +871,12 @@ function buildProof(node, env) {
   if (node.length === 4 && node[0] === 'subst') {
     return _wrap('substitution', node[1], node[2], node[3]);
   }
+  if (node.length === 2 && node[0] === 'whnf') {
+    return _wrap('whnf-reduction', node[1]);
+  }
+  if (node.length === 2 && (node[0] === 'nf' || node[0] === 'normal-form')) {
+    return _wrap('nf-reduction', node[1]);
+  }
   if (node.length === 4 && node[0] === 'fresh' && node[2] === 'in') {
     return _wrap('fresh', node[1], node[3]);
   }
@@ -973,6 +980,94 @@ function parseTermInput(term) {
   return term;
 }
 
+// Weak-head normal form (D4): reduce the spine of `node` — i.e. unfold the
+// head as long as there are arguments to apply to it — without descending
+// into binders or argument positions. The result's top-level form is either
+// a value (lambda, Pi, fresh, a stuck/neutral application, etc.) or a leaf.
+//
+// "Spine reduction" means: gather the applied arguments, β-reduce them
+// against the head one by one, and stop as soon as the spine is exhausted.
+// Substitution may leave a new redex in the body, but it is not on the
+// original term's spine, so whnf returns it unevaluated. Full normalization
+// (`nf`) is the place that descends into those positions.
+function whnfTerm(node, env, options = {}) {
+  if (!Array.isArray(node)) return node;
+  if (node.length === 0) return [];
+
+  if (node.length === 4 && node[0] === 'subst' && typeof node[2] === 'string') {
+    const term = whnfTerm(node[1], env, options);
+    const replacement = node[3];
+    return whnfTerm(subst(term, node[2], replacement), env, options);
+  }
+
+  // Collect the leftmost-outermost `apply` spine into [head, arg1, arg2, ...]
+  // so the loop below can β-reduce against any number of arguments without
+  // re-entering whnfTerm (which would descend into the substituted body's
+  // spine and over-reduce — see the test "leaves arguments unevaluated").
+  const spineArgs = [];
+  let head = node;
+  while (Array.isArray(head) && head.length === 3 && head[0] === 'apply') {
+    spineArgs.unshift(head[2]);
+    head = head[1];
+  }
+
+  // Prefix-call shape: `(f arg1 arg2 ...)` where `f` is a lambda value or a
+  // bound name. Drain that into the spine before reducing.
+  if (spineArgs.length === 0 && Array.isArray(head) && head.length > 1) {
+    const isLambdaHead = Array.isArray(head[0]) && head[0].length === 3 && head[0][0] === 'lambda';
+    const isNameHead = typeof head[0] === 'string' && head[0] !== 'apply' && head[0] !== 'lambda' && head[0] !== 'Pi' && head[0] !== 'fresh';
+    if (isLambdaHead || isNameHead) {
+      const [h, ...rest] = head;
+      head = h;
+      spineArgs.push(...rest);
+    }
+  }
+
+  // Drain the spine by β-reducing against the head. Stop as soon as the
+  // head can no longer reduce (not a lambda, not a bound name) or there
+  // are no remaining args.
+  while (spineArgs.length > 0) {
+    if (Array.isArray(head) && head.length === 3 && head[0] === 'lambda') {
+      const parsed = parseBinding(head[1]);
+      if (!parsed) break;
+      head = subst(head[2], parsed.paramName, spineArgs.shift());
+      continue;
+    }
+    if (typeof head === 'string') {
+      const lambda = env.getLambda(head) || env.getLambda(env._resolveQualified(head));
+      if (!lambda) break;
+      head = subst(lambda.body, lambda.param, spineArgs.shift());
+      continue;
+    }
+    break;
+  }
+
+  if (spineArgs.length === 0) return head;
+
+  // Stuck spine: rebuild the unreduced applies around the residual head.
+  let stuck = head;
+  for (const arg of spineArgs) stuck = ['apply', stuck, arg];
+  return stuck;
+}
+
+// True for an `(apply head arg)` whose head is a free symbol the env cannot
+// reduce further — i.e. an applied constructor or other neutral. The
+// printed normal form drops the explicit `apply` keyword for these neutrals
+// so `(apply succ zero)` shows as `(succ zero)`, matching the surface
+// example in issue #50.
+function isNeutralApply(node, env) {
+  if (!Array.isArray(node) || node.length !== 3 || node[0] !== 'apply') return false;
+  const fn = node[1];
+  if (typeof fn !== 'string') return false;
+  if (env.getLambda(fn) || env.getLambda(env._resolveQualified(fn))) return false;
+  return isVariableToken(fn);
+}
+
+// Full normal form (D4): reduce every redex, including those nested inside
+// binders and argument positions, until the term is in beta-(eta-)normal
+// form. The implementation is a normal-order traversal that piggy-backs on
+// the kernel's existing capture-avoiding `subst` helper so substitution
+// stays definitionally equal to the rest of the typed kernel.
 function normalizeTerm(node, env, options = {}) {
   if (!Array.isArray(node)) return node;
   if (node.length === 0) return [];
@@ -984,7 +1079,7 @@ function normalizeTerm(node, env, options = {}) {
   }
 
   if (node.length === 3 && node[0] === 'apply') {
-    const fn = node[1];
+    const fn = normalizeTerm(node[1], env, options);
     const arg = normalizeTerm(node[2], env, options);
     if (Array.isArray(fn) && fn.length === 3 && fn[0] === 'lambda') {
       const parsed = parseBinding(fn[1]);
@@ -994,7 +1089,7 @@ function normalizeTerm(node, env, options = {}) {
       const lambda = env.getLambda(fn) || env.getLambda(env._resolveQualified(fn));
       if (lambda) return normalizeTerm(subst(lambda.body, lambda.param, arg), env, options);
     }
-    return ['apply', normalizeTerm(fn, env, options), arg];
+    return ['apply', fn, arg];
   }
 
   if (node.length === 3 && node[0] === 'lambda') {
@@ -1152,6 +1247,44 @@ function isConvertible(left, right, ctx, options) {
     if (normalizedAssigned !== null) return env.clamp(normalizedAssigned) === env.hi;
   }
   return isStructurallySame(leftTerm, rightTerm);
+}
+
+// Drop the explicit `apply` keyword on neutral applications, recursively.
+// `(apply f a)` whose head is a free constructor-like symbol becomes
+// `(f a)` so the printed normal form matches the LiNo surface example
+// from issue #50: `(succ (succ zero))` rather than the explicit
+// `(apply succ (apply succ zero))`.
+function flattenNeutralApplies(node, env) {
+  if (!Array.isArray(node)) return node;
+  if (node.length === 0) return node;
+  const binder = binderInfo(node);
+  if (binder) {
+    const out = node.slice();
+    out[binder.bodyIndex] = flattenNeutralApplies(node[binder.bodyIndex], env);
+    return out;
+  }
+  const flattened = node.map(child => flattenNeutralApplies(child, env));
+  if (isNeutralApply(flattened, env)) {
+    return [flattened[1], flattened[2]];
+  }
+  return flattened;
+}
+
+// Public weak-head normal form API (issue #50, D4).
+// Reduces only the spine of `term` — leaves binders and arguments untouched.
+function whnf(term, ctx, options) {
+  const env = ctx instanceof Env ? ctx : new Env(ctx && ctx.env ? ctx.env : ctx);
+  const opts = conversionOptionsFrom(ctx, options);
+  return whnfTerm(parseTermInput(term), env, opts);
+}
+
+// Public full normal form API (issue #50, D4).
+// Reduces every redex in `term`, including ones nested under binders and in
+// argument positions, until the term is in beta-(eta-)normal form.
+function nf(term, ctx, options) {
+  const env = ctx instanceof Env ? ctx : new Env(ctx && ctx.env ? ctx.env : ctx);
+  const opts = conversionOptionsFrom(ctx, options);
+  return flattenNeutralApplies(normalizeTerm(parseTermInput(term), env, opts), env);
 }
 
 function evalReducedTerm(reduced, env) {
@@ -2423,6 +2556,31 @@ function evalNode(node, env){
   // Kernel substitution primitive: (subst term x replacement)
   if (node.length === 4 && node[0] === 'subst' && typeof node[2] === 'string') {
     return { term: evalTermNode(node, env) };
+  }
+
+  // Weak-head normal form (issue #50, D4): (whnf expr) reduces only the
+  // spine of `expr` — leaves binders and arguments untouched. Returned as a
+  // term result so callers can keep reducing or print the form directly.
+  if (node.length === 2 && node[0] === 'whnf') {
+    return { term: whnfTerm(node[1], env) };
+  }
+  if (node[0] === 'whnf') {
+    throw new RmlError('E038', 'Normalization form must be `(whnf <expr>)`');
+  }
+
+  // Full normal form (issue #50, D4): (nf expr) and the long alias
+  // (normal-form expr). Returns the beta-normal form as a term result.
+  if (node.length === 2 && node[0] === 'nf') {
+    return { term: flattenNeutralApplies(normalizeTerm(node[1], env), env) };
+  }
+  if (node[0] === 'nf') {
+    throw new RmlError('E038', 'Normalization form must be `(nf <expr>)`');
+  }
+  if (node.length === 2 && node[0] === 'normal-form') {
+    return { term: flattenNeutralApplies(normalizeTerm(node[1], env), env) };
+  }
+  if (node[0] === 'normal-form') {
+    throw new RmlError('E038', 'Normalization form must be `(normal-form <expr>)`');
   }
 
   // Freshness binder: (fresh x in body)
@@ -3964,6 +4122,8 @@ export {
   isNum,
   isStructurallySame,
   isConvertible,
+  whnf,
+  nf,
   parseBinding,
   parseBindings,
   subst,
