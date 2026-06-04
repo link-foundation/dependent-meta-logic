@@ -79,10 +79,10 @@ RML (Relative Meta-Logic, formerly Associative-Dependent Logic / ADL) is a minim
 | 1 | Unary (trivial) | `{any}` (no quantization) | `{any}` (no quantization) | [Many-valued logic](https://en.wikipedia.org/wiki/Many-valued_logic) |
 | 2 | Binary / [Boolean](https://en.wikipedia.org/wiki/Boolean_algebra) | `{0, 1}` (false, true) | `{-1, 1}` (false, true) | [Classical logic](https://en.wikipedia.org/wiki/Classical_logic) |
 | 3 | Ternary / [Three-valued](https://en.wikipedia.org/wiki/Three-valued_logic) | `{0, 0.5, 1}` (false, unknown, true) | `{-1, 0, 1}` (false, unknown, true) | [Kleene logic](https://en.wikipedia.org/wiki/Three-valued_logic#Kleene_and_Priest_logics), [Łukasiewicz logic](https://en.wikipedia.org/wiki/%C5%81ukasiewicz_logic), [Balanced ternary](https://en.wikipedia.org/wiki/Balanced_ternary) |
-| 4 | Quaternary | `{0, ⅓, ⅔, 1}` | `{-1, -⅓, ⅓, 1}` | [Belnap's four-valued logic](https://en.wikipedia.org/wiki/Many-valued_logic) |
+| 4 | Quaternary / [Four-valued](https://en.wikipedia.org/wiki/Four-valued_logic) | `{0, ⅓, ⅔, 1}` | `{-1, -⅓, ⅓, 1}` | [Belnap's four-valued logic](https://en.wikipedia.org/wiki/Four-valued_logic#Belnap) |
 | 5 | Quinary | `{0, 0.25, 0.5, 0.75, 1}` | `{-1, -0.5, 0, 0.5, 1}` | [Many-valued logic](https://en.wikipedia.org/wiki/Many-valued_logic) |
-| N | N-valued | N evenly-spaced levels | N evenly-spaced levels | [Many-valued logic](https://en.wikipedia.org/wiki/Many-valued_logic) |
-| 0/∞ | Continuous / [Fuzzy](https://en.wikipedia.org/wiki/Fuzzy_logic) | Any value in `[0, 1]` | Any value in `[-1, 1]` | [Fuzzy logic](https://en.wikipedia.org/wiki/Fuzzy_logic), [Łukasiewicz ∞-valued](https://en.wikipedia.org/wiki/%C5%81ukasiewicz_logic) |
+| N | [Finite-valued](https://en.wikipedia.org/wiki/Finite-valued_logic) / N-valued | N evenly-spaced levels | N evenly-spaced levels | [Many-valued logic](https://en.wikipedia.org/wiki/Many-valued_logic), [Finite-valued logic](https://en.wikipedia.org/wiki/Finite-valued_logic) |
+| 0/∞ | Continuous / [Probabilistic](https://en.wikipedia.org/wiki/Probabilistic_logic) / [Fuzzy](https://en.wikipedia.org/wiki/Fuzzy_logic) | Any value in `[0, 1]` | Any value in `[-1, 1]` | [Probabilistic logic](https://en.wikipedia.org/wiki/Probabilistic_logic) (probability logic), [Fuzzy logic](https://en.wikipedia.org/wiki/Fuzzy_logic), [Infinite-valued logic](https://en.wikipedia.org/wiki/Infinite-valued_logic), [Łukasiewicz ∞-valued](https://en.wikipedia.org/wiki/%C5%81ukasiewicz_logic) |
 
 ## Quick Start
 
@@ -1101,7 +1101,10 @@ with this file so any new violation fails the build.
 - [Boolean algebra](https://en.wikipedia.org/wiki/Boolean_algebra) — classical 2-valued logic
 - [Three-valued logic](https://en.wikipedia.org/wiki/Three-valued_logic) — ternary logics (Kleene, Łukasiewicz, Bochvar)
 - [Łukasiewicz logic](https://en.wikipedia.org/wiki/%C5%81ukasiewicz_logic) — N-valued and infinite-valued extensions
+- [Finite-valued logic](https://en.wikipedia.org/wiki/Finite-valued_logic) — discrete many-valued logic with finitely many truth values
+- [Infinite-valued logic](https://en.wikipedia.org/wiki/Infinite-valued_logic) — continuous-valued many-valued logic families
 - [Fuzzy logic](https://en.wikipedia.org/wiki/Fuzzy_logic) — continuous-valued logic with degrees of truth
+- [Probabilistic logic](https://en.wikipedia.org/wiki/Probabilistic_logic) — probability and logic for reasoning under uncertainty
 - [Balanced ternary](https://en.wikipedia.org/wiki/Balanced_ternary) — ternary system using {-1, 0, 1}
 - [Four-valued logic (Belnap)](https://en.wikipedia.org/wiki/Four-valued_logic#Belnap) — extends classical logic with "both" (contradiction) and "neither" (gap)
 - [Liar paradox](https://en.wikipedia.org/wiki/Liar_paradox) — "this statement is false" and its resolution in many-valued logics
