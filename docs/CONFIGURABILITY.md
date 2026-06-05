@@ -40,7 +40,8 @@ RML reverses this priority. Its design goals demand:
 1. **Many-valued by default.** RML supports unary, Boolean, ternary
    ([Kleene](https://en.wikipedia.org/wiki/Three-valued_logic#Kleene_and_Priest_logics)),
    N-valued, [Belnap four-valued](https://en.wikipedia.org/wiki/Four-valued_logic#Belnap),
-   and continuous [fuzzy](https://en.wikipedia.org/wiki/Fuzzy_logic) /
+   and continuous [probabilistic](https://en.wikipedia.org/wiki/Probabilistic_logic),
+   [fuzzy](https://en.wikipedia.org/wiki/Fuzzy_logic), and
    [Łukasiewicz ∞-valued](https://en.wikipedia.org/wiki/%C5%81ukasiewicz_logic) logics.
    No single fixed `and`/`or` works across all of these; min, max, average,
    product, and probabilistic-sum are all the right answer somewhere.

@@ -140,6 +140,55 @@ describe('compatibility and release documentation', () => {
   });
 });
 
+describe('supported logic type overview documentation', () => {
+  function readmeTableRow(prefix) {
+    const readme = read('README.md');
+    return readme.split('\n').find(line => line.startsWith(prefix));
+  }
+
+  it('mentions probabilistic logic in the continuous valence row', () => {
+    const row = readmeTableRow('| 0/∞ |');
+
+    assert.ok(row, 'README must include the continuous valence row');
+    for (const expected of [
+      '[Probabilistic](https://en.wikipedia.org/wiki/Probabilistic_logic)',
+      '[Probabilistic logic](https://en.wikipedia.org/wiki/Probabilistic_logic)',
+      'probability logic',
+      '[Infinite-valued logic](https://en.wikipedia.org/wiki/Infinite-valued_logic)',
+    ]) {
+      assert.ok(row.includes(expected), `continuous row missing ${expected}`);
+    }
+  });
+
+  it('uses specific Wikipedia references for finite and four-valued logic rows', () => {
+    const quaternary = readmeTableRow('| 4 |');
+    const nValued = readmeTableRow('| N |');
+
+    assert.ok(quaternary, 'README must include the quaternary valence row');
+    assert.ok(nValued, 'README must include the N-valued valence row');
+    assert.ok(
+      quaternary.includes('https://en.wikipedia.org/wiki/Four-valued_logic'),
+      'quaternary row must link four-valued logic',
+    );
+    assert.ok(
+      nValued.includes('https://en.wikipedia.org/wiki/Finite-valued_logic'),
+      'N-valued row must link finite-valued logic',
+    );
+  });
+
+  it('keeps the expanded logic references in the README bibliography', () => {
+    const readme = read('README.md');
+
+    for (const expected of [
+      '[Probabilistic logic](https://en.wikipedia.org/wiki/Probabilistic_logic)',
+      '[Finite-valued logic](https://en.wikipedia.org/wiki/Finite-valued_logic)',
+      '[Infinite-valued logic](https://en.wikipedia.org/wiki/Infinite-valued_logic)',
+    ]) {
+      assert.ok(readme.includes(expected), `README references missing ${expected}`);
+    }
+  });
+});
+
 describe('self-bootstrap tutorial documentation', () => {
   it('is linked from the README', () => {
     const readme = read('README.md');
