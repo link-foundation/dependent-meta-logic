@@ -76,45 +76,69 @@ so adoption is an *overlay*, not a rewrite of RML's semantics.
 So integration means inserting meta-language *under* RML's `Node`/AST as the
 representation and *beside* the hand-written matchers as the manipulation engine.
 
-## 4. The central constraint: no npm package
+## 4. The former central constraint: no npm package — now resolved
 
-`meta-language` is **Rust-only**: `registry.npmjs.org/meta-language` returns
-**404** (verified 2026-06-18). RML must keep its JS and Rust implementations at
-parity (N1; the discipline audited in [issue #167](../issue-167/)). Therefore the
-Rust side can `cargo add meta-language` directly, but **the JS side cannot
-`import` it**. Every integration plan below is dominated by this fact.
+> **Updated 2026-06-21.** This section originally read: "`meta-language` is
+> **Rust-only**: `registry.npmjs.org/meta-language` returns **404** … the JS side
+> cannot `import` it. Every integration plan below is dominated by this fact."
+> **That is no longer true.**
 
-## 5. JS integration options
+meta-language now ships a **first-class JavaScript implementation with enforced
+Rust↔JS parity** — `@link-foundation/meta-language` v0.46.0 in the upstream `js/`
+folder, built (like RML) on **`links-notation 0.13`**, with a `check:parity` gate
+run by both `js.yml` and `rust.yml` (upstream issue
+[#163](https://github.com/link-foundation/meta-language/issues/163), closed
+2026-06-21). An empirical readiness check
+([`experiments/issue-181-meta-language-js-smoke.mjs`](../../../experiments/issue-181-meta-language-js-smoke.mjs),
+**7 PASS / 0 FAIL**) confirms the JS package already covers RML's representation,
+lossless round-trip, structural query/replace, substitution, and translation-rule
+needs. Full evidence in [`data/online-research.md` §5](./data/online-research.md#5-update-2026-06-21--meta-language-now-has-a-javascript-implementation).
 
-Four ways to give the JS implementation access to meta-language's capabilities,
-with a recommendation:
+Two items remain, **neither a blocker for the two pillars** (both filed upstream
+as the maintainer requested):
 
-| Option | How | Pros | Cons |
-|--------|-----|------|------|
-| **A. WASM build** | Compile meta-language (or a thin façade crate) to `wasm32` and ship an npm wrapper that loads the `.wasm`. | Single source of truth (the Rust crate); true parity; runs in Node and browser. | Build pipeline; `tree-sitter`/`doublets` may not be `wasm`-friendly → may need a reduced feature set; binary size. |
-| **B. Upstream npm publish** | Ask `link-foundation/meta-language` to publish an napi-rs/wasm npm package. | Cleanest for consumers; mirrors `links-notation`'s dual crate+npm story (0.13 on both). | Out of RML's control; depends on upstream roadmap. |
-| **C. Subprocess/CLI bridge** | JS shells out to a `meta-language` CLI binary for parse/query/rewrite. | Easy; full feature set. | Process overhead; binary must be installed; awkward in browser; breaks pure-JS deployments. |
-| **D. JS port of the needed subset** | Re-implement the *needed* meta-language surface (network + LinkQuery + substitution) in JS on top of `links-notation` (which **is** on npm). | No native dep; pure JS; full parity control. | Duplicates upstream; risk of drift; most work. |
+- **Packaging only:** the JS package is **not yet published to npm**
+  (`npm view @link-foundation/meta-language` → 404, verified 2026-06-21; `js.yml`
+  has no publish step) → upstream
+  [#165](https://github.com/link-foundation/meta-language/issues/165). RML adopts
+  it via a **pinned git dependency** meanwhile, switching to a version range once
+  it lands on npm (mirroring how RML already pins `links-notation 0.13.0`).
+- **Parity completeness:** truth-value semantics (`TruthValue` /
+  `ProbabilisticTruthValue`, `rust/src/semantics.rs`) are **Rust-only**, absent
+  from JS and from the parity manifest → upstream
+  [#166](https://github.com/link-foundation/meta-language/issues/166).
+  **Non-blocking**, because RML keeps its own truth model in JS regardless; this
+  only blocks *delegating* truth semantics to meta-language on the JS side, which
+  adoption of representation + manipulation does not require.
 
-**Recommendation (staged):**
+## 5. JS integration: the chosen path
 
-1. **Short term — Option B then A.** First, open an upstream request to publish a
-   wasm/napi npm package (B); it mirrors how `links-notation` already ships on both
-   crates.io and npm at 0.13. In parallel, prototype a **wasm façade** (A) of the
-   minimal surface (`parse`, `projected_links`, `LinkQuery`, `find/replace`,
-   `SubstitutionRule`) so RML is not blocked on upstream.
-2. **Fallback — Option D for the kernel only.** If neither wasm nor an npm publish
-   is viable in time, port *only* the small kernel the strategy library needs
-   (network handle + query + substitution) to JS over `links-notation`, behind the
-   exact same interface as the wasm wrapper, so the two are swappable.
-3. **Avoid Option C** for the library path (keep it only as a dev/diagnostic
-   escape hatch), because subprocess dependence breaks browser and pure-JS use.
+With a real JS implementation upstream, the four-way bridge analysis below is now
+mostly historical — **Option D's goal (a pure-JS surface over `links-notation`)
+has been realised upstream**, so RML neither builds a wasm façade nor ports a
+kernel itself. The plan is simply to **depend on `@link-foundation/meta-language`
+directly** (git-pinned until npm), behind a thin `MetaLang` façade so the import
+source (git → npm) can change without touching call sites.
 
-The interface RML codes against is defined once (a `MetaLang` façade:
-`parse(text) -> Network`, `query(net, q) -> captures`, `replace(net, q, f) -> Network`,
-`substitute(net, rule) -> Network`, `project(net, mode) -> Network`,
-`reconstruct(net) -> text`) so the *implementation* behind it (wasm vs port) can
-change without touching RML.
+| Option | Status as of 2026-06-21 |
+|--------|--------------------------|
+| **A. WASM build** of the Rust crate | **Not needed** — a native JS implementation exists; no wasm pipeline / `tree-sitter`/`doublets` wasm concerns. |
+| **B. Upstream npm publish** | **In progress** — package is built and versioned; publish step tracked by upstream [#165](https://github.com/link-foundation/meta-language/issues/165). RML git-pins until then. |
+| **C. Subprocess/CLI bridge** | **Avoided** (as before) — breaks browser/pure-JS use; keep only as a diagnostic escape hatch. |
+| **D. JS port of the needed subset** | **Realised upstream** — meta-language now *is* a JS package over `links-notation`, with a `check:parity` gate guarding drift, so RML does not maintain its own port. |
+
+The interface RML codes against is still defined once (a `MetaLang` façade:
+`parse(text, language) -> Network`, `query(net, q) -> matches`,
+`replace(net, matches, rule) -> Network`, `substitute(net, rule) -> Network`,
+`reconstruct(net) -> text`) so swapping the git pin for the npm package — or
+adding truth-value semantics once [#166](https://github.com/link-foundation/meta-language/issues/166)
+lands — never touches RML call sites.
+
+**Ingestion detail (verified empirically).** RML's *named* LiNo is ingested with
+the lossless parser `LinkNetwork.parse(text, language, config)` (byte-for-byte
+`reconstructText()`), **not** `fromLino()`. `fromLino()` is the inverse of
+`toLino()` and only accepts the canonical numeric-id schema (`(1: 2 3)`), matching
+Rust's `from_lino` contract — documented behaviour, not a limitation for RML.
 
 ## 6. Representation: the RML dialect as a meta-language network
 
@@ -158,27 +182,33 @@ change without touching RML.
 
 To protect the existing test suite and dual-implementation parity (N1, N2):
 
-1. Land the **`MetaLang` façade interface** + the Rust crate dependency first,
-   with the JS side behind the wasm/port wrapper, both no-ops until wired.
+1. Land the **`MetaLang` façade interface** + both dependencies first — the Rust
+   crate (`meta-language` on crates.io) and the JS package
+   (`@link-foundation/meta-language`, git-pinned until npm
+   [#165](https://github.com/link-foundation/meta-language/issues/165)) — both
+   no-ops until wired.
 2. Make the network representation **opt-in** (`rml … --via-meta-language`) and run
    the full suite both ways in CI until parity is proven, then flip the default.
 3. Keep `Node`/JS-AST as the AbstractSyntax projection so all existing code paths
    keep compiling; delete hand-written matchers only after `LinkQuery`-based ones
    pass the same tests.
-4. Pin `meta-language` to an exact version (it is young: 0.45.0, 0 stars) and bump
-   deliberately in dedicated PRs, like RML already pins `links-notation 0.13.0`.
+4. Pin `meta-language` to an exact version on both sides (crate v0.45.0+, JS
+   v0.46.0) and bump deliberately in dedicated PRs, like RML already pins
+   `links-notation 0.13.0`.
 
 ## 10. Risks
 
 The integration-specific risks (full register in
 [`risks-and-open-questions.md`](./risks-and-open-questions.md)):
 
-- **No npm package** → the dominant risk; mitigated by §5 (wasm/upstream/port).
-- **meta-language maturity** (young, 0 stars, 694 downloads) → MX1 audit gates
-  adoption; pin exact version; keep the façade so we can swap implementations.
-- **Semantic mismatch** between meta-language `ProbabilisticTruthValue` and RML's
-  truth ranges → reconciled in MX1; both are many-valued/probabilistic so the
-  surface area is small, but it must be checked construct-by-construct.
-- **Double maintenance** if Option D (JS port) is chosen → mitigated by porting
-  only the minimal kernel behind the shared façade and a conformance test against
-  the Rust crate.
+- **No npm package** (was the dominant risk) → **downgraded 2026-06-21** to a
+  packaging follow-up: a JS implementation now exists and is git-installable; npm
+  publish is tracked by upstream [#165](https://github.com/link-foundation/meta-language/issues/165).
+- **meta-language maturity** (young, 1 star) → MX1 audit gates adoption; pin exact
+  versions (crate + JS) and keep the façade so we can swap implementations.
+- **Truth-value parity gap** — meta-language's `ProbabilisticTruthValue` exists in
+  Rust only, not yet in JS (upstream [#166](https://github.com/link-foundation/meta-language/issues/166)).
+  Non-blocking: RML keeps its own JS truth model; the MX1 reconciliation only
+  matters if/when RML delegates truth semantics to meta-language on the JS side.
+- **Double maintenance** is **no longer a concern** — RML does not maintain a JS
+  port; the upstream `check:parity` gate guards Rust↔JS drift for us.

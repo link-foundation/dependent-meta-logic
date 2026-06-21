@@ -63,11 +63,13 @@ layer reconstructs the original bytes and whose AbstractSyntax projection equals
 today's `Node`/JS-AST. Representation becomes network-backed; the old AST is a
 projection. Ships **opt-in** (`--via-meta-language`).
 - Rust: `cargo add meta-language` (pin exact 0.45.0), implement the façade.
-- JS: implement the façade behind the bridge chosen in §JS-bridge below.
+- JS: depend on the native `@link-foundation/meta-language` package (git-pinned
+  until npm publish, [#165](https://github.com/link-foundation/meta-language/issues/165))
+  and implement the same façade over it — see §JS-dependency below.
 **Acceptance:** round-trip `reconstruct_text(parse(x)) == x` for all `examples/`
 and `lib/` files; AbstractSyntax projection equals current parse on the test
 corpus; full existing suite green with and without the flag; JS/Rust parity test.
-**Depends on:** MX1, JS-bridge decision. **Size:** L.
+**Depends on:** MX1. **Size:** L.
 
 ### MX3 — Manipulation via meta-language query/rewrite (R5)
 
@@ -89,15 +91,21 @@ projections/printers over the shared network.
 round-trip demo (host → network → host) with a regression test.
 **Depends on:** MX2; coordinate with [issue #138](../issue-138/). **Size:** L.
 
-### JS-bridge (sub-task of MX2) — give JS access to meta-language
+### JS-dependency (sub-task of MX2) — wire JS to meta-language's native package
 
-**Body.** meta-language has **no npm package** (404). Implement the `MetaLang`
-façade for JS via, in priority order: (B) request/await an upstream wasm/napi npm
-publish; (A) a wasm façade of the minimal surface; (D) a minimal JS port over
-`links-notation` as fallback. Avoid (C) subprocess for the library path. Full
-analysis: [`meta-language-integration.md` §5](./meta-language-integration.md#5-js-integration-options).
-**Acceptance:** JS façade passes the same conformance corpus as the Rust crate.
-**Size:** L (the riskiest task — see risks doc Q1).
+**Body.** meta-language now ships a **native JS package**
+(`@link-foundation/meta-language` v0.46.0) with its own enforced Rust↔JS parity
+gate, so no wasm bridge or JS port is needed. Implement the `MetaLang` façade for
+JS directly over that package, git-pinned until it is published to npm
+([#165](https://github.com/link-foundation/meta-language/issues/165)); switch to a
+version range once published — exactly as RML already pins `links-notation 0.13.0`.
+Full analysis:
+[`meta-language-integration.md` §5](./meta-language-integration.md#5-js-integration-the-chosen-path).
+**Acceptance:** JS façade passes the same conformance corpus as the Rust façade
+(empirically pre-verified by
+[`experiments/issue-181-meta-language-js-smoke.mjs`](../../../experiments/issue-181-meta-language-js-smoke.mjs)
+— 7 PASS / 0 FAIL).
+**Size:** M (downgraded from L — no longer the riskiest task; see risks doc Q1).
 
 ---
 
@@ -208,10 +216,10 @@ new modules. **Acceptance:** examples run in JS and Rust; parity audit updated.
 | ID | Title | Phase | Depends on | Size |
 |----|-------|-------|-----------|------|
 | MX1 | meta-language coverage audit | MX | — | M |
-| MX2 | RML dialect + network representation | MX | MX1, JS-bridge | L |
+| MX2 | RML dialect + network representation | MX | MX1 | L |
 | MX3 | Manipulation via query/rewrite | MX | MX2 | L |
 | MX4 | Translation via projections | MX | MX2, #138 | L |
-| JS-bridge | JS access to meta-language (wasm/port) | MX | MX1 | L |
+| JS-dependency | Wire JS to meta-language's native package | MX | MX1 | M |
 | ST1 | Core combinator algebra | ST | MX1 | M |
 | ST2 | Term-rewriting strategies | ST | ST1, MX3 | M |
 | ST3 | Proof/tactic strategies | ST | ST1 | M |

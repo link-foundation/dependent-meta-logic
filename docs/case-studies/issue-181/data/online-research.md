@@ -6,7 +6,13 @@ source and the date it was checked. It backs the analysis in
 [`meta-language-integration.md`](../meta-language-integration.md) and
 [`strategy-library.md`](../strategy-library.md).
 
-All package/registry facts below were verified on **2026-06-18**.
+All package/registry facts in §1–§4 below were verified on **2026-06-18**.
+
+> **Update — 2026-06-21:** meta-language now ships a **JavaScript implementation
+> with enforced Rust↔JS parity** (`@link-foundation/meta-language` v0.46.0,
+> `js/` folder), which **supersedes the "Rust-only / no npm package" framing in
+> §1**. The new verified facts, the empirical readiness check, and the two gaps
+> filed upstream are in **[§5](#5-update-2026-06-21--meta-language-now-has-a-javascript-implementation)**.
 
 ---
 
@@ -223,3 +229,86 @@ clause must move. The strategy/tactic library plus search-depth controls turn th
 The two gaps issue #181 targets are therefore precisely: **(G1)** no
 meta-language integration, and **(G2)** no strategy/tactic *combinator* layer on
 top of the existing rules/tactics.
+
+---
+
+## 5. Update 2026-06-21 — meta-language now has a JavaScript implementation
+
+The 2026-06-18 analysis (§1) found meta-language to be **Rust-only with no npm
+package**, which it called "the single biggest integration constraint". On
+**2026-06-21** the maintainer reported on [PR #182](https://github.com/link-foundation/relative-meta-logic/pull/182)
+that meta-language "now fully supports JavaScript" and asked whether RML can
+proceed with full adoption. This section records what was re-verified.
+
+### 5.1 New verified facts (checked 2026-06-21)
+
+| Fact | Value | Source |
+|------|-------|--------|
+| README tagline | "implemented in **both Rust and JavaScript** with guaranteed feature parity between the two." | `README.md` (was "A Rust foundation…") |
+| Repository layout | `rust/` (reference crate) **and** `js/` (`@link-foundation/meta-language`), shared `parity/`, `docs/`, `.github/` | `gh api repos/link-foundation/meta-language/contents` |
+| JS package | `@link-foundation/meta-language` **v0.46.0**, `type: module`, ESM `exports`, `links-notation 0.13.0` + `peggy 5.1.0` deps | `js/package.json` |
+| JS implementation issue | [#163 "Implement JavaScript version of meta language"](https://github.com/link-foundation/meta-language/issues/163) — **CLOSED 2026-06-21** | `gh issue view 163` |
+| Parity gate | `parity/language-features.json` (14 required features) + `npm run check:parity`, run by **both** `js.yml` and `rust.yml` | `js/README.md`, `js/scripts/` |
+| JS tests | `node --test` — **13/13 pass** | `cd js && npm install && npm test` |
+| **npm registry** | **still 404** — package not yet published; git/tarball install only | `npm view @link-foundation/meta-language` → E404; `registry.npmjs.org/@link-foundation%2Fmeta-language` → `{"error":"Not found"}` |
+
+The JS package is built on the **same `links-notation 0.13` RML already uses**
+(`js/src/rml-links.mjs:17`), so adoption stays an overlay on a shared substrate —
+exactly as §1 hoped, now without the language barrier.
+
+### 5.2 Empirical readiness check
+
+[`experiments/issue-181-meta-language-js-smoke.mjs`](../../../../experiments/issue-181-meta-language-js-smoke.mjs)
+exercises the JS package against RML's concrete needs. Result: **7 PASS, 2 GAP,
+0 FAIL**.
+
+| Probe | Result |
+|-------|--------|
+| Lossless parse of RML **named** LiNo (`parse(src, "RML", …)`) | PASS (114 links) |
+| Byte-for-byte round-trip of RML named LiNo (`reconstructText()`) | PASS |
+| Lossless parse/reconstruct of a JavaScript host sample | PASS |
+| S-expression query + `replace` (README codemod example) | PASS (`oldName`→`newName`) |
+| `SubstitutionRule` / `applySubstitution` leaf op | PASS |
+| `TranslationRuleSet` present | PASS |
+| `TruthValue` / `ProbabilisticTruthValue` exported in **JS** | **GAP** → upstream [#166](https://github.com/link-foundation/meta-language/issues/166) |
+| Strategy/tactic combinators upstream | GAP (expected — RML's Pillar 2 to build) |
+
+**Ingestion note.** RML's *named* LiNo must be ingested with the **lossless
+parser** `LinkNetwork.parse(text, language, config)`, **not** `fromLino()`.
+`fromLino()` is the inverse of `toLino()` — it only accepts the canonical
+numeric-id serialization schema (e.g. `(1: 2 3)`), matching Rust's `from_lino`
+contract ("top-level statement must be an identified link"). This is the
+documented contract, not a bug; the smoke test asserts both behaviours.
+
+### 5.3 Gaps filed upstream (as the maintainer requested)
+
+- **[meta-language#165](https://github.com/link-foundation/meta-language/issues/165)** —
+  publish `@link-foundation/meta-language` to npm (registry returns 404; `js.yml`
+  has no publish step). Blocks clean `npm install`/version pinning; git-install
+  works meanwhile.
+- **[meta-language#166](https://github.com/link-foundation/meta-language/issues/166)** —
+  truth-value semantics (`TruthValue` / `Probability` / `ProbabilisticTruthValue`,
+  `rust/src/semantics.rs`) are **Rust-only**, absent from JS and from the parity
+  manifest, despite #163's "all features in Rust must also be in JS" mandate.
+
+### 5.4 Answer to the maintainer's question
+
+**Can RML proceed with full JS support of meta-language?** For the **two pillars
+the issue actually asks for** — representation/parsing (R2/R4/N4) and structural
+manipulation (R5/translation R1) — **yes**: the JS package covers them today,
+verified empirically. The remaining items are not blockers for those pillars:
+
+- npm publish (#165) — adopt via a **pinned git dependency** until the package
+  lands on npm, then switch to a version range (mirrors how RML pins
+  `links-notation 0.13.0`).
+- truth-value parity (#166) — **non-blocking**, because RML keeps its own truth
+  model in JS regardless; it only blocks *delegating* truth semantics to
+  meta-language on the JS side, which is not required to adopt representation +
+  manipulation.
+- strategy/tactic combinators — never a meta-language deliverable; Pillar 2
+  builds them in RML on top of `find`/`replace`/`applySubstitution`.
+
+So the case study's previously dominant "no npm / Rust-only" constraint is
+**resolved as a parity blocker** and downgraded to a packaging follow-up; the
+integration plan in [`meta-language-integration.md`](../meta-language-integration.md)
+§4–§5 is updated accordingly.

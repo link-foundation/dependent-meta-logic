@@ -18,6 +18,10 @@ Tier 1 = direct reuse, Tier 2 = reference designs to imitate, Tier 3 = backgroun
 ### `meta-language` (link-foundation) — the core adoption
 
 - **Crate:** `meta-language` v0.45.0 on crates.io (694 downloads, Unlicense).
+- **JS package:** `@link-foundation/meta-language` v0.46.0 — a native JavaScript
+  implementation with enforced Rust↔JS parity (`parity/language-features.json` +
+  `npm run check:parity`, gated by both `js.yml` and `rust.yml`). Not yet on the
+  npm registry ([#165](https://github.com/link-foundation/meta-language/issues/165)).
 - **Repo:** <https://github.com/link-foundation/meta-language> ("A language about languages").
 - **Why it fits R1–R5:**
   - It is a **lossless self-describing links network** (`LinkNetwork`) that can
@@ -30,17 +34,23 @@ Tier 1 = direct reuse, Tier 2 = reference designs to imitate, Tier 3 = backgroun
     manipulation that way) and providing the *matching substrate* the strategy
     library schedules over (**R6**).
   - It ships **many-valued `TruthValue` + fixed-point `ProbabilisticTruthValue`**
-    semantics, which align with RML's own probabilistic/many-valued truth ranges
-    — so adopting it does not force RML to abandon its semantics.
+    semantics (Rust side; JS parity still pending,
+    [#166](https://github.com/link-foundation/meta-language/issues/166)), which
+    align with RML's own probabilistic/many-valued truth ranges — so adopting it
+    does not force RML to abandon its semantics.
   - It is **built on `links-notation 0.13`**, the exact parser RML already pins,
     minimising impedance mismatch.
   - It carries **tree-sitter 0.25.8 + grammar crates** and an optional `doublets`
     persistent backend, which is the substrate for **R1** (translation between
     host languages) and dovetails with [issue #138](../issue-138/)'s CST plan.
-- **The one hard constraint:** **no npm package** (registry returns 404). The
-  Rust side can depend on the crate directly; the JS side cannot `import` it. This
-  is the central decision in [`meta-language-integration.md`](./meta-language-integration.md).
-- **Maturity caveat:** created 2026-06-05, 0 stars, past prototype but young. A
+- **Former hard constraint — now resolved:** when this study was first written
+  meta-language was Rust-only with **no npm package**, so the JS half of RML could
+  not adopt it. As of 2026-06-21 meta-language ships its **own native JS package**
+  with an enforced parity gate, so both halves of RML can adopt it. The only
+  residual is packaging — it is not yet published to the npm registry, so RML
+  git-pins it until [#165](https://github.com/link-foundation/meta-language/issues/165)
+  lands. See [`meta-language-integration.md`](./meta-language-integration.md).
+- **Maturity caveat:** created 2026-06-05, young but past prototype. A
   feature-coverage audit against RML's construct set is the first sub-issue (MX1)
   precisely because we must confirm "extensible and feature-rich enough"
   (the issue's own hedge: "*it should be* … enough").
@@ -141,7 +151,7 @@ Rust ([`strategy-library.md`](./strategy-library.md)).
 
 | Need | Decision | Rationale |
 |------|----------|-----------|
-| Lossless expression representation (R2) | **Reuse** `meta-language` `LinkNetwork` (Rust); bridge to JS (see integration doc) | Already lossless, already on `links-notation 0.13`, already has probabilistic truth values. |
+| Lossless expression representation (R2) | **Reuse** `meta-language` `LinkNetwork` on **both** sides (native Rust crate + native JS package) | Already lossless, already on `links-notation 0.13`, native JS implementation now available (git-pinned until npm publish [#165](https://github.com/link-foundation/meta-language/issues/165)). |
 | Structural match/rewrite substrate (R5) | **Reuse** `meta-language` `LinkQuery`/`find`/`replace`/`SubstitutionRule` | Purpose-built codemod API; avoids re-implementing query matching. |
 | Strategy/tactic combinators (R6) | **Build** a small core in JS + Rust, modelled on Visser/Stratego + LCF | No suitable cross-language library exists; the core is small (~15 combinators) and must run identically in both implementations (N1). |
 | Equality-saturation automation | **Optional reuse** of `egg`/`egglog` behind a strategy | Powerful but Rust-only and heavyweight; must be opt-in so JS parity (N1) holds without it. |

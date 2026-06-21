@@ -32,7 +32,8 @@ that carries it.
 - **Option 2:** Adopt only meta-language's *data model* shape inside RML's own
   structures without depending on the crate. Lower risk, but forfeits the lossless
   parser, query and codemod APIs — i.e. forfeits most of R3/R5. Not recommended.
-- **Carried by:** MX2. **Depends on:** MX1, and the JS bridge decision (§R-N1).
+- **Carried by:** MX2. **Depends on:** MX1 (the JS side depends directly on
+  meta-language's native JS package — see N1 below).
 
 ## R3 — meta-language must be extensible/feature-rich enough for all our features
 
@@ -42,8 +43,8 @@ that carries it.
   (`ParserRegistry`/`LanguageParser`), or (b) file an upstream feature request, or
   (c) keep that construct in an RML-side overlay until upstream catches up.
 - **Why an audit, not a leap:** the issue itself hedges ("it *should be* …
-  enough"), and meta-language is young (v0.45.0, 0 stars). The audit converts a
-  hope into a checklist with evidence.
+  enough"), and meta-language is young (Rust v0.45.0 / JS v0.46.0). The audit
+  converts a hope into a checklist with evidence.
 - **Carried by:** MX1.
 
 ## R4 — Prefer parsing in our dialect of meta-language
@@ -135,12 +136,16 @@ that carries it.
 
 ## Non-functional plans
 
-### N1 — JS ⇄ Rust parity (the dominant constraint)
+### N1 — JS ⇄ Rust parity
 
-- **Recommendation:** define a single `MetaLang` façade interface; back it with a
-  **wasm build of meta-language** (and request an upstream npm publish), with a
-  minimal **JS port** as fallback. Full analysis in
-  [`meta-language-integration.md` §5](./meta-language-integration.md#5-js-integration-options).
+- **Recommendation:** define a single `MetaLang` façade interface; back it on each
+  side with meta-language's **native implementation** — the Rust crate on the Rust
+  side and the native JS package (`@link-foundation/meta-language`) on the JS side.
+  No wasm build or JS port is needed: meta-language now maintains its **own**
+  Rust↔JS parity gate. RML git-pins the JS package until it is published to npm
+  ([#165](https://github.com/link-foundation/meta-language/issues/165)). Full
+  analysis in
+  [`meta-language-integration.md` §5](./meta-language-integration.md#5-js-integration-the-chosen-path).
 - The strategy core is written twice (JS + Rust) against the same conformance
   corpus so no combinator is implementation-specific.
 
