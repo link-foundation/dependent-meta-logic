@@ -16,11 +16,13 @@ body and acceptance criteria. The phases:
 - **Phase QC** — beat competitors, with evidence in the comparison docs (R7).
 - **Phase DOC** — documentation, tutorial, examples.
 
-This case-study PR (#182) delivers the **plan only**. Implementation lands in
-per-phase PRs. Following the precedent of [issue #138](../issue-138/) and the
-parity epic [issue #95](../issue-95/), the GitHub issues themselves are **not
-auto-created here** — creating issues is an outward-facing action; a maintainer
-(or an explicitly authorised assistant run) files them from the bodies below.
+This case-study PR (#182) delivers the plan plus an initial Rust/JS
+meta-language overlay and smoke-tested façade. The deeper opt-in migration work
+below can still land in per-phase PRs. Following the precedent of
+[issue #138](../issue-138/) and the parity epic [issue #95](../issue-95/), the
+GitHub issues themselves are **not auto-created here** — creating issues is an
+outward-facing action; a maintainer (or an explicitly authorised assistant run)
+files them from the bodies below.
 
 ## Dependency graph
 
@@ -62,10 +64,9 @@ meta-language's `ParserRegistry`; parsing RML yields a `LinkNetwork` whose lossl
 layer reconstructs the original bytes and whose AbstractSyntax projection equals
 today's `Node`/JS-AST. Representation becomes network-backed; the old AST is a
 projection. Ships **opt-in** (`--via-meta-language`).
-- Rust: `cargo add meta-language` (pin exact 0.45.0), implement the façade.
-- JS: depend on the native `@link-foundation/meta-language` package (git-pinned
-  until npm publish, [#165](https://github.com/link-foundation/meta-language/issues/165))
-  and implement the same façade over it — see §JS-dependency below.
+- Rust: depend on `meta-language = "0.49.0"` and implement the façade.
+- JS: depend on the native npm `meta-language` package (`^0.46.0`) and implement
+  the same façade over it — see §JS-dependency below.
 **Acceptance:** round-trip `reconstruct_text(parse(x)) == x` for all `examples/`
 and `lib/` files; AbstractSyntax projection equals current parse on the test
 corpus; full existing suite green with and without the flag; JS/Rust parity test.
@@ -94,17 +95,16 @@ round-trip demo (host → network → host) with a regression test.
 ### JS-dependency (sub-task of MX2) — wire JS to meta-language's native package
 
 **Body.** meta-language now ships a **native JS package**
-(`@link-foundation/meta-language` v0.46.0) with its own enforced Rust↔JS parity
+(`meta-language` v0.46.0) with its own enforced Rust↔JS parity
 gate, so no wasm bridge or JS port is needed. Implement the `MetaLang` façade for
-JS directly over that package, git-pinned until it is published to npm
-([#165](https://github.com/link-foundation/meta-language/issues/165)); switch to a
-version range once published — exactly as RML already pins `links-notation 0.13.0`.
+JS directly over that package from npm. Upstream release lockstep is tracked in
+[meta-language#171](https://github.com/link-foundation/meta-language/issues/171).
 Full analysis:
 [`meta-language-integration.md` §5](./meta-language-integration.md#5-js-integration-the-chosen-path).
 **Acceptance:** JS façade passes the same conformance corpus as the Rust façade
 (empirically pre-verified by
 [`experiments/issue-181-meta-language-js-smoke.mjs`](../../../experiments/issue-181-meta-language-js-smoke.mjs)
-— 7 PASS / 0 FAIL).
+— 9 PASS / 2 GAP / 0 FAIL).
 **Size:** M (downgraded from L — no longer the riskiest task; see risks doc Q1).
 
 ---

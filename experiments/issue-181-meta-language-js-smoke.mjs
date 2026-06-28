@@ -1,30 +1,32 @@
 // Issue #181 — empirical smoke test of meta-language's JavaScript package
 // against the things RML actually needs from it.
 //
-// The case study (docs/case-studies/issue-181/) was written when meta-language
-// was Rust-only with no npm package. The maintainer's 2026-06-21 comment on
-// PR #182 says meta-language "now fully supports JavaScript", so this script
-// re-checks, empirically, which of RML's needs the JS package already covers
-// and which are still missing — grounding the gap analysis in evidence rather
-// than reading types.
+// The case study (docs/case-studies/issue-181/) was originally written when
+// meta-language was Rust-only with no npm package. The package is now published
+// to npm as `meta-language`, so this script re-checks, empirically, which of
+// RML's needs the JS package already covers and which upstream parity gaps are
+// still relevant.
 //
-// Run from a checkout of link-foundation/meta-language's js/ folder:
-//   node experiments/issue-181-meta-language-js-smoke.mjs /path/to/meta-language/js
-// or set META_LANGUAGE_JS to that path. It prints a PASS/FAIL/GAP line per probe.
+// Run after `cd js && npm install`:
+//   node ../experiments/issue-181-meta-language-js-smoke.mjs
+// To test a local meta-language checkout, pass its js/ folder or set
+// META_LANGUAGE_JS to that path. It prints a PASS/FAIL/GAP line per probe.
 
-import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
-const pkgDir =
-  process.argv[2] || process.env.META_LANGUAGE_JS || '/tmp/ml-js-pkg';
-const entry = pathToFileURL(path.join(pkgDir, 'src', 'index.js')).href;
-
 let ml;
 try {
-  ml = await import(entry);
+  const pkgDir = process.argv[2] || process.env.META_LANGUAGE_JS;
+  if (pkgDir) {
+    ml = await import(pathToFileURL(path.join(pkgDir, 'src', 'index.js')).href);
+  } else {
+    ml = await import(
+      pathToFileURL(path.join(process.cwd(), 'node_modules', 'meta-language', 'src', 'index.js')).href
+    );
+  }
 } catch (err) {
-  console.error(`Cannot import meta-language JS from ${pkgDir}:`, err.message);
+  console.error('Cannot import meta-language JS:', err.message);
   process.exit(2);
 }
 
@@ -44,8 +46,11 @@ function gap(name, detail) {
 const {
   LinkNetwork,
   LinkQuery,
+  LinkType,
   ParseConfiguration,
   ReplacementRule,
+  TranslationRule,
+  TranslationRuleSet,
 } = ml;
 
 // R2/R4 — represent the RML dialect: ingest RML's own named LiNo source.
@@ -119,26 +124,59 @@ probe('R5 SubstitutionRule / applySubstitution', () => {
   const b = net.insertPoint('y');
   const rule = new ml.SubstitutionRule([a], [b]);
   const report = net.applySubstitution(rule);
-  return `report.isEmpty=${report.isEmpty()}`;
+  return `updated=${report.updated().length}`;
 });
 
 // R1 — translation rules (RML -> host language projection).
 probe('R1 TranslationRuleSet present + render', () => {
-  if (!ml.TranslationRuleSet) throw new Error('TranslationRuleSet not exported');
-  return 'exported';
+  if (!TranslationRuleSet) throw new Error('TranslationRuleSet not exported');
+  const net = LinkNetwork.parse('(namespace self)', 'RML', ParseConfiguration.default());
+  const rules = new TranslationRuleSet('smoke').withRule(
+    new TranslationRule(
+      'open-token',
+      LinkQuery.byType(LinkType.SourceToken).withTerm('('),
+    ).withTemplate('text', 'translated'),
+  );
+  const rendered = net.reconstructTextAsWithRules('text', ParseConfiguration.default(), rules);
+  if (rendered !== 'translated') throw new Error(`unexpected render: ${rendered}`);
+  return rendered;
 });
 
-// Truth-value semantics: RML is probabilistic/many-valued; the case study said
-// meta-language's ProbabilisticTruthValue "aligns with RML's". Check JS exposes it.
-if (ml.TruthValue || ml.ProbabilisticTruthValue || ml.Probability) {
-  probe('SEM TruthValue / ProbabilisticTruthValue exported in JS', () => {
-    return Object.keys(ml).filter((k) => /Truth|Probab/.test(k)).join(',');
-  });
-} else {
+probe('SEM TruthValue / ProbabilisticTruthValue exported in JS', () => {
+  if (!ml.TruthValue || !ml.ProbabilisticTruthValue || !ml.Probability) {
+    throw new Error('truth semantics are not fully exported');
+  }
+  const conjunction = ml.TruthValue.True.and(ml.TruthValue.Unknown).toString();
+  const probabilisticAnd = ml.ProbabilisticTruthValue
+    .fromRatio(1, 2)
+    .and(ml.ProbabilisticTruthValue.fromRatio(1, 2))
+    .trueProbability()
+    .basisPoints();
+  if (conjunction !== 'Unknown' || probabilisticAnd !== 2500) {
+    throw new Error(`unexpected truth semantics: ${conjunction}, ${probabilisticAnd}`);
+  }
+  return `${conjunction}, p=${probabilisticAnd}`;
+});
+
+const serializationProbe = new TranslationRuleSet('smoke').withRule(
+  new TranslationRule(
+    'open-token',
+    LinkQuery.byType(LinkType.SourceToken).withTerm('('),
+  ).withTemplate('text', 'translated'),
+).toLino();
+if (serializationProbe.trim().startsWith('{')) {
   gap(
-    'SEM TruthValue / ProbabilisticTruthValue in JS',
-    'NOT exported by the JS package (present in rust/src/semantics.rs only); ' +
-      'RML relies on probabilistic/many-valued truth alignment — JS↔Rust parity gap.',
+    'R1 TranslationRuleSet JS/Rust LiNo interop',
+    'JS toLino/fromLino still uses JSON, while Rust uses canonical LiNo; ' +
+      'reported upstream as meta-language#172.',
+  );
+}
+
+if (LinkType.SourceToken && !LinkType.Token) {
+  gap(
+    'N1 token LinkType naming parity',
+    'JS exposes LinkType.SourceToken while Rust exposes LinkType::Token; ' +
+      'reported upstream as meta-language#173.',
   );
 }
 

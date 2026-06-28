@@ -39,18 +39,18 @@ sub-issues in this PR.
 
 Two facts shape everything:
 
-- **meta-language now ships in both Rust and JavaScript with enforced parity**
-  (crate v0.45.0, JS `@link-foundation/meta-language` v0.46.0), built on the same
-  `links-notation 0.13` RML already uses, with lossless representation, structural
-  query/codemod, and many-valued/probabilistic truth values — i.e. it is a strong
-  fit for RML's needs. **Update 2026-06-21:** the original blocker ("Rust-only, no
-  npm package") is **resolved** — a JS implementation now exists and is verified to
-  cover RML's needs ([smoke test](../../../experiments/issue-181-meta-language-js-smoke.mjs),
-  7 PASS / 0 FAIL); only two follow-ups remain, both filed upstream and neither
-  blocking the pillars: **npm publish is still pending** ([meta-language#165](https://github.com/link-foundation/meta-language/issues/165),
-  git-install meanwhile) and **truth-value semantics are still Rust-only**
-  ([meta-language#166](https://github.com/link-foundation/meta-language/issues/166),
-  non-blocking). See [`data/online-research.md` §5](./data/online-research.md#5-update-2026-06-21--meta-language-now-has-a-javascript-implementation).
+- **meta-language now ships in both Rust and JavaScript.** RML can depend on the
+  Rust crate (`meta-language` v0.49.0) and the npm package (`meta-language`
+  v0.46.0), both on `links-notation 0.13`, with lossless representation,
+  structural query/codemod, translation rules, and many-valued/probabilistic
+  truth values. **Update 2026-06-28:** the old "Rust-only / no npm package" and
+  "truth semantics are Rust-only" blockers are resolved. The smoke test now shows
+  9 PASS / 2 GAP / 0 FAIL; the remaining upstream gaps are release lockstep
+  ([meta-language#171](https://github.com/link-foundation/meta-language/issues/171)),
+  cross-runtime `TranslationRuleSet` serialization
+  ([#172](https://github.com/link-foundation/meta-language/issues/172)), and token
+  `LinkType` naming ([#173](https://github.com/link-foundation/meta-language/issues/173)).
+  None blocks the RML overlay shipped in this PR.
 - **RML already has rules, a pattern matcher, and prototype tactics, but no
   strategy *combinators* at all** — no `seq`/`<+`/`repeat`/`topdown`/`innermost`,
   no goal combinators, and (per the comparison docs) **no search-depth controls**.
@@ -115,9 +115,9 @@ representation with the old AST as a projection (MX2) → move matching/rewritin
 `LinkQuery`/`SubstitutionRule` (MX3) → route host-language translation through
 projections, converging with [issue #138](../issue-138/) (MX4). What was the hard
 part — giving the **JS** side access despite a missing npm package — is now
-straightforward: meta-language ships a native JS package, so RML depends on it
-directly (git-pinned until npm [#165](https://github.com/link-foundation/meta-language/issues/165))
-behind a thin `MetaLang` façade.
+straightforward: meta-language ships a native npm package, so RML depends on it
+directly behind a thin `MetaLang` façade. The façade also isolates the current
+Rust/JS version skew and token naming mismatch tracked upstream.
 
 ### Pillar 2 — strategy/tactic library (R6)
 
@@ -150,10 +150,9 @@ way" (R5).
    generates every traversal scheme the competitors expose (Visser 2005).
 3. **One combinator algebra, two domains** (rewriting + proving). Keeps the surface
    small and the implementation shared.
-4. **Parity behind a façade.** RML codes against a `MetaLang` interface; the JS
-   backing (git pin → npm package) is swappable, so the packaging follow-up
-   ([#165](https://github.com/link-foundation/meta-language/issues/165)) never
-   forks the design (N1).
+4. **Parity behind a façade.** RML codes against a `MetaLang` interface; JS and
+   Rust dependencies can be bumped deliberately while upstream release lockstep
+   ([#171](https://github.com/link-foundation/meta-language/issues/171)) catches up.
 5. **Bounded by construction.** Every non-terminating combinator takes fuel/depth;
    this also closes the comparison docs' only outright "No" (search-depth controls).
 6. **Schedulers, not new rules.** Strategies only sequence already-certified steps,
@@ -170,9 +169,8 @@ Full bodies and acceptance criteria in [`sub-issues.md`](./sub-issues.md).
 - **MX2** RML dialect + network-backed representation (opt-in).
 - **MX3** Manipulation via `LinkQuery`/`SubstitutionRule`.
 - **MX4** Translation via projections (converge with #138).
-- **JS-bridge** ~~wasm/upstream/port to give JS access~~ **resolved 2026-06-21** —
-  meta-language ships a native JS package; RML depends on it directly (git-pinned
-  until npm [#165](https://github.com/link-foundation/meta-language/issues/165)).
+- **JS-bridge** ~~wasm/upstream/port to give JS access~~ **resolved 2026-06-28** —
+  meta-language ships a native npm package and RML depends on it directly.
 
 ### Phase ST — strategy/tactic library
 - **ST1** Core combinator algebra (JS + Rust, conformance corpus).
@@ -219,18 +217,17 @@ Mirrors the conventions in [issue #138](../issue-138/) and the parity discipline
 ## Open questions
 
 See [`risks-and-open-questions.md`](./risks-and-open-questions.md). Q1 (preferred
-JS bridge) is **answered as of 2026-06-21** — meta-language ships a native JS
-package, so RML depends on it directly (git-pinned until npm
-[#165](https://github.com/link-foundation/meta-language/issues/165)); no wasm/port
-needed. The remaining three for the maintainer: (2) whether Phase MX absorbs or
-runs beside [issue #138](../issue-138/); (3) the bar to flip `--via-meta-language`
-to default; (4) whether to authorise auto-creating the sub-issues.
+JS bridge) is **answered as of 2026-06-28** — meta-language ships a native npm
+package, so no wasm/port is needed. The remaining maintainer decisions are:
+whether Phase MX absorbs or runs beside [issue #138](../issue-138/), the bar to
+flip `--via-meta-language` to default, and whether to authorise auto-creating the
+sub-issues.
 
 ## References
 
-### External (verified 2026-06-18, meta-language re-verified 2026-06-21)
+### External (verified 2026-06-18, meta-language re-verified 2026-06-28)
 
-- [`link-foundation/meta-language`](https://github.com/link-foundation/meta-language) — repo, README, crate v0.45.0 (crates.io), **JS package `@link-foundation/meta-language` v0.46.0** (in-repo `js/`; npm publish pending [#165](https://github.com/link-foundation/meta-language/issues/165)), homepage <https://link-foundation.github.io/meta-language/>.
+- [`link-foundation/meta-language`](https://github.com/link-foundation/meta-language) — repo, README, Rust crate v0.49.0 (crates.io), **JS package `meta-language` v0.46.0** (npm), homepage <https://link-foundation.github.io/meta-language/>. Remaining upstream parity/packaging gaps: [#171](https://github.com/link-foundation/meta-language/issues/171), [#172](https://github.com/link-foundation/meta-language/issues/172), [#173](https://github.com/link-foundation/meta-language/issues/173).
 - [`links-notation` on crates.io](https://crates.io/crates/links-notation) and [on npm](https://www.npmjs.com/package/links-notation) — both 0.13.
 - Eelco Visser, "A survey of strategies in rule-based program transformation systems", *J. Symbolic Computation* 40 (2005) 831–873.
 - [Stratego/XT language reference](https://www.metaborg.org/) (strategy combinators `id`/`fail`/`;`/`<+`/`+`/`all`/`one`/`some`).

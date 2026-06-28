@@ -4,27 +4,28 @@ The design trade-offs we are not yet ready to commit to, and the risks the
 implementation phases ([`sub-issues.md`](./sub-issues.md)) must plan around,
 ordered by expected impact (highest first).
 
-## Q1. meta-language has no npm package — RESOLVED 2026-06-21 (downgraded)
+## Q1. meta-language has no npm package — RESOLVED 2026-06-28
 
 > **Was the dominant risk.** When this case study was written (2026-06-18),
 > `meta-language` was Rust-only with **no npm package** (registry → 404), so the
 > JS half of RML could not adopt it and Phase MX risked forking into two stacks.
 
-**Resolution.** meta-language now ships a **native JavaScript implementation with
-enforced Rust↔JS parity** (`@link-foundation/meta-language` v0.46.0; upstream
+**Resolution.** meta-language now ships a **native JavaScript npm package with
+enforced Rust↔JS parity** (`meta-language` v0.46.0; upstream
 [#163](https://github.com/link-foundation/meta-language/issues/163), closed
-2026-06-21). The smoke test
+2026-06-21, and [#165](https://github.com/link-foundation/meta-language/issues/165),
+closed 2026-06-28). The smoke test
 ([`experiments/issue-181-meta-language-js-smoke.mjs`](../../../experiments/issue-181-meta-language-js-smoke.mjs))
 confirms the JS package covers RML's representation, query, substitution and
-translation needs (**7 PASS / 0 FAIL**). RML now adopts it **directly**, with no
-wasm build or JS port to own.
+translation needs (**9 PASS / 2 GAP / 0 FAIL**). RML now adopts it **directly**,
+with no wasm build or JS port to own.
 
-**Residual (packaging only, non-blocking):** the JS package is **not yet on npm**
-(`npm view` → 404, verified 2026-06-21) → upstream
-[#165](https://github.com/link-foundation/meta-language/issues/165). RML pins a
-**git dependency** behind the `MetaLang` façade until the package is published,
-then switches to a version range — exactly as it already pins `links-notation
-0.13.0`. This is no longer the riskiest sub-task.
+**Residuals (non-blocking):** the Rust crate is at v0.49.0 while npm latest is
+v0.46.0 ([#171](https://github.com/link-foundation/meta-language/issues/171));
+translation rule-set serialization is not cross-runtime yet
+([#172](https://github.com/link-foundation/meta-language/issues/172)); and the
+lossless token `LinkType` name differs (`Token` vs `SourceToken`,
+[#173](https://github.com/link-foundation/meta-language/issues/173)).
 
 ## Q2. Is meta-language actually "feature-rich enough"?
 
@@ -38,17 +39,16 @@ it cannot represent.
 mapping with an explicit decision for every gap (extend dialect / upstream request
 / RML overlay). Pin the exact version; bump deliberately.
 
-## Q3. Truth values: Rust-only in meta-language + semantic reconciliation
+## Q3. Truth values: semantic reconciliation
 
 meta-language ships many-valued `TruthValue` + fixed-point
-`ProbabilisticTruthValue`, **but only in Rust** — they are absent from the JS
-package and from the parity manifest (verified 2026-06-21), filed upstream as
-[#166](https://github.com/link-foundation/meta-language/issues/166). RML has its
-own probabilistic/many-valued truth ranges and valence model.
+`ProbabilisticTruthValue` in both Rust and JavaScript; the old JS gap was filed
+and closed upstream as [#166](https://github.com/link-foundation/meta-language/issues/166).
+RML still has its own probabilistic/many-valued truth ranges and valence model.
 
-**Risk:** (a) RML cannot delegate truth semantics to meta-language on the **JS**
-side until #166 lands; (b) even once present, subtle mismatches (lattice ordering,
-fixed-point semantics, defaults) could change evaluation results.
+**Risk:** subtle mismatches (lattice ordering, fixed-point semantics, defaults)
+could change evaluation results if RML later delegates truth semantics to
+meta-language.
 
 **Why non-blocking:** RML keeps its **own** JS truth model regardless, so adopting
 meta-language for representation + manipulation (the two pillars) does not depend
@@ -56,9 +56,8 @@ on (a). The reconciliation only becomes load-bearing if RML later chooses to
 delegate truth semantics to meta-language.
 
 **Recommendation:** treat truth-value delegation as a **later, optional** step
-gated on upstream #166; when taken, MX1 reconciles the two models
-construct-by-construct with differential tests against current RML outputs. Both
-are many-valued/probabilistic, so the surface area is small — but it must be
+gated on MX1 reconciliation with differential tests against current RML outputs.
+Both are many-valued/probabilistic, so the surface area is small — but it must be
 checked, not assumed.
 
 ## Q4. Convergence vs collision with the CST epic (#138)
@@ -142,11 +141,8 @@ on the parity-epic discipline in [issue #95](../issue-95/).
 
 ## Open questions for the maintainer
 
-1. **JS bridge preference — ANSWERED 2026-06-21:** meta-language now ships a native
-   JS package, so RML depends on it directly (git-pinned until npm publish
-   [#165](https://github.com/link-foundation/meta-language/issues/165)); no
-   wasm/napi/port needed. The only remaining maintainer call here is whether to
-   wait for npm publish before wiring MX, or to start now on the git pin.
+1. **JS bridge preference — ANSWERED 2026-06-28:** meta-language now ships a native
+   npm package, so RML depends on it directly; no wasm/napi/port needed.
 2. **Relationship to #138:** should Phase MX formally absorb the #138 CST converter
    work, or run beside it with a shared meta-language substrate?
 3. **Default flip:** what bar (which test suites green, what parity %) authorises

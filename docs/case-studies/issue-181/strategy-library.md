@@ -75,7 +75,7 @@ that composes them is entirely missing**. That is exactly the gap to fill.
 5. **Manipulate via meta-language (R5).** Where a strategy needs to *match* or
    *rewrite* a subterm, it calls meta-language's `LinkQuery`/`find`/`replace`/
    `SubstitutionRule` — the native Rust crate on the Rust side and the native JS
-   package (`@link-foundation/meta-language`) on the JS side
+   package (`meta-language`) on the JS side
    ([`meta-language-integration.md`](./meta-language-integration.md)) rather than
    ad-hoc AST walking. The strategy library is the *scheduler*; meta-language is
    the *matcher/rewriter*.

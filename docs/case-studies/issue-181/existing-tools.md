@@ -5,7 +5,7 @@ study for design only — for the two pillars of issue #181: **adopting
 `meta-language`** for expression representation and translation, and building a
 **strategy/tactic combinator library**. It satisfies requirement **R12** (“check
 known existing components/libraries that solve similar problems or can help”).
-All package facts were verified on 2026-06-18; see
+Package facts were first verified on 2026-06-18 and refreshed on 2026-06-28; see
 [`data/online-research.md`](./data/online-research.md) for the raw evidence.
 
 The catalogue is tiered like [`docs/case-studies/issue-138/existing-tools.md`](../issue-138/existing-tools.md):
@@ -17,11 +17,12 @@ Tier 1 = direct reuse, Tier 2 = reference designs to imitate, Tier 3 = backgroun
 
 ### `meta-language` (link-foundation) — the core adoption
 
-- **Crate:** `meta-language` v0.45.0 on crates.io (694 downloads, Unlicense).
-- **JS package:** `@link-foundation/meta-language` v0.46.0 — a native JavaScript
+- **Crate:** `meta-language` v0.49.0 on crates.io (Unlicense).
+- **JS package:** `meta-language` v0.46.0 on npm — a native JavaScript
   implementation with enforced Rust↔JS parity (`parity/language-features.json` +
-  `npm run check:parity`, gated by both `js.yml` and `rust.yml`). Not yet on the
-  npm registry ([#165](https://github.com/link-foundation/meta-language/issues/165)).
+  `npm run check:parity`, gated by both `js.yml` and `rust.yml`). The current
+  Rust/JS release skew is tracked upstream in
+  [#171](https://github.com/link-foundation/meta-language/issues/171).
 - **Repo:** <https://github.com/link-foundation/meta-language> ("A language about languages").
 - **Why it fits R1–R5:**
   - It is a **lossless self-describing links network** (`LinkNetwork`) that can
@@ -34,7 +35,7 @@ Tier 1 = direct reuse, Tier 2 = reference designs to imitate, Tier 3 = backgroun
     manipulation that way) and providing the *matching substrate* the strategy
     library schedules over (**R6**).
   - It ships **many-valued `TruthValue` + fixed-point `ProbabilisticTruthValue`**
-    semantics (Rust side; JS parity still pending,
+    semantics in both Rust and JavaScript (the old JS gap was closed in
     [#166](https://github.com/link-foundation/meta-language/issues/166)), which
     align with RML's own probabilistic/many-valued truth ranges — so adopting it
     does not force RML to abandon its semantics.
@@ -45,11 +46,13 @@ Tier 1 = direct reuse, Tier 2 = reference designs to imitate, Tier 3 = backgroun
     host languages) and dovetails with [issue #138](../issue-138/)'s CST plan.
 - **Former hard constraint — now resolved:** when this study was first written
   meta-language was Rust-only with **no npm package**, so the JS half of RML could
-  not adopt it. As of 2026-06-21 meta-language ships its **own native JS package**
-  with an enforced parity gate, so both halves of RML can adopt it. The only
-  residual is packaging — it is not yet published to the npm registry, so RML
-  git-pins it until [#165](https://github.com/link-foundation/meta-language/issues/165)
-  lands. See [`meta-language-integration.md`](./meta-language-integration.md).
+  not adopt it. As of 2026-06-28 meta-language ships its **own native npm package**
+  with an enforced parity gate, so both halves of RML can adopt it. The residuals
+  are release lockstep, translation-rule serialization, and token naming parity
+  ([#171](https://github.com/link-foundation/meta-language/issues/171),
+  [#172](https://github.com/link-foundation/meta-language/issues/172),
+  [#173](https://github.com/link-foundation/meta-language/issues/173)).
+  See [`meta-language-integration.md`](./meta-language-integration.md).
 - **Maturity caveat:** created 2026-06-05, young but past prototype. A
   feature-coverage audit against RML's construct set is the first sub-issue (MX1)
   precisely because we must confirm "extensible and feature-rich enough"
@@ -151,7 +154,7 @@ Rust ([`strategy-library.md`](./strategy-library.md)).
 
 | Need | Decision | Rationale |
 |------|----------|-----------|
-| Lossless expression representation (R2) | **Reuse** `meta-language` `LinkNetwork` on **both** sides (native Rust crate + native JS package) | Already lossless, already on `links-notation 0.13`, native JS implementation now available (git-pinned until npm publish [#165](https://github.com/link-foundation/meta-language/issues/165)). |
+| Lossless expression representation (R2) | **Reuse** `meta-language` `LinkNetwork` on **both** sides (native Rust crate + native JS package) | Already lossless, already on `links-notation 0.13`, native JS implementation now available from npm. |
 | Structural match/rewrite substrate (R5) | **Reuse** `meta-language` `LinkQuery`/`find`/`replace`/`SubstitutionRule` | Purpose-built codemod API; avoids re-implementing query matching. |
 | Strategy/tactic combinators (R6) | **Build** a small core in JS + Rust, modelled on Visser/Stratego + LCF | No suitable cross-language library exists; the core is small (~15 combinators) and must run identically in both implementations (N1). |
 | Equality-saturation automation | **Optional reuse** of `egg`/`egglog` behind a strategy | Powerful but Rust-only and heavyweight; must be opt-in so JS parity (N1) holds without it. |

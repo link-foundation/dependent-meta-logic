@@ -43,7 +43,7 @@ that carries it.
   (`ParserRegistry`/`LanguageParser`), or (b) file an upstream feature request, or
   (c) keep that construct in an RML-side overlay until upstream catches up.
 - **Why an audit, not a leap:** the issue itself hedges ("it *should be* …
-  enough"), and meta-language is young (Rust v0.45.0 / JS v0.46.0). The audit
+  enough"), and meta-language is young (Rust v0.49.0 / JS npm v0.46.0). The audit
   converts a hope into a checklist with evidence.
 - **Carried by:** MX1.
 
@@ -140,10 +140,11 @@ that carries it.
 
 - **Recommendation:** define a single `MetaLang` façade interface; back it on each
   side with meta-language's **native implementation** — the Rust crate on the Rust
-  side and the native JS package (`@link-foundation/meta-language`) on the JS side.
+  side and the native JS package (`meta-language`) on the JS side.
   No wasm build or JS port is needed: meta-language now maintains its **own**
-  Rust↔JS parity gate. RML git-pins the JS package until it is published to npm
-  ([#165](https://github.com/link-foundation/meta-language/issues/165)). Full
+  Rust↔JS parity gate. RML depends on the published npm package on the JS side;
+  upstream release lockstep is tracked in
+  [#171](https://github.com/link-foundation/meta-language/issues/171). Full
   analysis in
   [`meta-language-integration.md` §5](./meta-language-integration.md#5-js-integration-the-chosen-path).
 - The strategy core is written twice (JS + Rust) against the same conformance
