@@ -13,7 +13,7 @@
 #   docker run --rm -v "$PWD/my.lino:/work/my.lino" rml-rust /work/my.lino
 
 # ---------- Build stage ----------
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1-slim-bookworm AS builder
 
 WORKDIR /build
 
